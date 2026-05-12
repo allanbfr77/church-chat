@@ -1,18 +1,12 @@
 import { useState, useEffect, useRef } from 'react'
-import { db, storage } from './firebase'
+import { db } from './firebase'
 import {
   ref as dbRef,
   push,
   onValue,
   query,
   limitToLast,
-  serverTimestamp,
 } from 'firebase/database'
-import {
-  ref as storageRef,
-  uploadBytesResumable,
-  getDownloadURL,
-} from 'firebase/storage'
 
 // ── Helpers ──────────────────────────────────────────────────
 function uid() { return Math.random().toString(36).slice(2) + Date.now().toString(36) }
@@ -35,15 +29,25 @@ function fileIcon(type) {
   if (type.includes('zip') || type.includes('rar')) return '🗜️'
   return '📎'
 }
+function readAsDataURL(file) {
+  return new Promise((res, rej) => {
+    const r = new FileReader()
+    r.onload = () => res(r.result)
+    r.onerror = rej
+    r.readAsDataURL(file)
+  })
+}
 
 // ── File Preview ─────────────────────────────────────────────
 function FilePreview({ file, mine }) {
+  // file.dataUrl is a base64 data URL stored directly in Firebase
+  const src = file.dataUrl || file.url
   if (file.type?.startsWith('image/')) return (
     <div style={{ marginBottom: 4 }}>
       <img
-        src={file.url} alt={file.name}
+        src={src} alt={file.name}
         style={{ maxWidth: '100%', maxHeight: 240, borderRadius: 8, display: 'block', cursor: 'pointer' }}
-        onClick={() => window.open(file.url, '_blank')}
+        onClick={() => { const w = window.open(); w.document.write(`<body style="margin:0;background:#000"><img src="${src}" style="max-width:100%;max-height:100vh;display:block;margin:auto"/></body>`) }}
       />
       <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.4)', marginTop: 3 }}>
         {file.name} · {fmtSize(file.size)}
@@ -52,7 +56,7 @@ function FilePreview({ file, mine }) {
   )
   return (
     <a
-      href={file.url} target="_blank" rel="noreferrer"
+      href={src} download={file.name}
       style={{
         display: 'flex', alignItems: 'center', gap: 10,
         background: mine ? 'rgba(0,0,0,0.2)' : 'rgba(255,255,255,0.06)',
@@ -66,29 +70,14 @@ function FilePreview({ file, mine }) {
           {file.name}
         </div>
         <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)', marginTop: 2 }}>
-          {fmtSize(file.size)} · abrir / baixar
+          {fmtSize(file.size)} · baixar
         </div>
       </div>
     </a>
   )
 }
 
-// ── Upload progress bar ───────────────────────────────────────
-function UploadBar({ progress, fileName }) {
-  return (
-    <div style={s.uploadBar}>
-      <span style={{ fontSize: 13, color: '#fff', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-        ⬆️ {fileName}
-      </span>
-      <div style={s.progressOuter}>
-        <div style={{ ...s.progressInner, width: `${progress}%` }} />
-      </div>
-      <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.5)', flexShrink: 0 }}>{progress}%</span>
-    </div>
-  )
-}
-
-// ── Main Chat ─────────────────────────────────────────────────
+// ── Main App ─────────────────────────────────────────────────
 export default function App() {
   const [userId]      = useState(uid)
   const [name, setName]           = useState('')
@@ -97,25 +86,24 @@ export default function App() {
   const [input, setInput]         = useState('')
   const [online, setOnline]       = useState(1)
   const [sentIds, setSentIds]     = useState(new Set())
-  const [pendingFile, setPendingFile] = useState(null)   // { name, size, type, localUrl }
-  const [uploadProgress, setUploadProgress] = useState(null) // { pct, name }
+  const [pendingFile, setPendingFile] = useState(null)
+  const [reading, setReading]     = useState(false)
   const [fileError, setFileError] = useState('')
   const [sending, setSending]     = useState(false)
-  const bottomRef  = useRef(null)
+  const bottomRef   = useRef(null)
   const textareaRef = useRef(null)
-  const fileRef    = useRef(null)
+  const fileRef     = useRef(null)
 
   // Listen for messages in real time
   useEffect(() => {
     if (!joined) return
-    const q = query(dbRef(db, 'messages'), limitToLast(150))
+    const q = query(dbRef(db, 'messages'), limitToLast(100))
     const unsub = onValue(q, snap => {
       const data = snap.val()
       if (!data) { setMessages([]); return }
       const msgs = Object.entries(data).map(([id, v]) => ({ id, ...v }))
       msgs.sort((a, b) => (a.ts || 0) - (b.ts || 0))
       setMessages(msgs)
-      // online = users active in last 5min
       const cutoff = Date.now() - 5 * 60 * 1000
       const users = new Set(msgs.filter(m => m.ts > cutoff).map(m => m.uid))
       users.add(userId)
@@ -128,44 +116,17 @@ export default function App() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
-  // Send message
   const send = async () => {
     if (!input.trim() && !pendingFile) return
     setSending(true)
-
     try {
-      let filePayload = null
-
-      // Upload file to Firebase Storage first
-      if (pendingFile) {
-        const path = `files/${Date.now()}_${pendingFile.name}`
-        const sRef = storageRef(storage, path)
-        const resp = await fetch(pendingFile.localUrl)
-        const blob = await resp.blob()
-
-        await new Promise((resolve, reject) => {
-          const task = uploadBytesResumable(sRef, blob, { contentType: pendingFile.type })
-          task.on('state_changed',
-            snap => setUploadProgress({ pct: Math.round(snap.bytesTransferred / snap.totalBytes * 100), name: pendingFile.name }),
-            reject,
-            async () => {
-              const url = await getDownloadURL(task.snapshot.ref)
-              filePayload = { name: pendingFile.name, size: pendingFile.size, type: pendingFile.type, url }
-              setUploadProgress(null)
-              resolve()
-            }
-          )
-        })
-      }
-
       const msgRef = await push(dbRef(db, 'messages'), {
         uid: userId,
         name,
         text: input.trim(),
         ts: Date.now(),
-        file: filePayload,
+        file: pendingFile || null,
       })
-
       setSentIds(prev => new Set([...prev, msgRef.key]))
       setInput('')
       setPendingFile(null)
@@ -173,9 +134,7 @@ export default function App() {
     } catch (err) {
       console.error(err)
       setFileError('Erro ao enviar. Tente novamente.')
-      setUploadProgress(null)
     }
-
     setSending(false)
   }
 
@@ -183,7 +142,7 @@ export default function App() {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() }
   }
 
-  const handleFileChange = e => {
+  const handleFileChange = async e => {
     const file = e.target.files?.[0]
     if (!file) return
     setFileError('')
@@ -192,12 +151,18 @@ export default function App() {
       e.target.value = ''
       return
     }
-    const localUrl = URL.createObjectURL(file)
-    setPendingFile({ name: file.name, size: file.size, type: file.type, localUrl })
+    setReading(true)
+    try {
+      const dataUrl = await readAsDataURL(file)
+      setPendingFile({ name: file.name, size: file.size, type: file.type, dataUrl })
+    } catch {
+      setFileError('Erro ao ler o arquivo.')
+    }
+    setReading(false)
     e.target.value = ''
   }
 
-  const canSend = (input.trim() || pendingFile) && !sending && !uploadProgress
+  const canSend = (input.trim() || pendingFile) && !sending && !reading
 
   // ── Login ──
   if (!joined) return (
@@ -228,7 +193,6 @@ export default function App() {
     <div style={s.page}>
       <style>{css}</style>
 
-      {/* Header */}
       <div style={s.header}>
         <div style={s.headerLeft}>
           <span style={s.headerIcon}>💬</span>
@@ -244,7 +208,6 @@ export default function App() {
       <div style={s.desktopWrapper}>
         <div style={s.chatPanel}>
 
-          {/* Messages */}
           <div style={s.msgArea}>
             {messages.length === 0 && (
               <div style={s.empty}>Nenhuma mensagem ainda. Diga olá! 👋</div>
@@ -276,13 +239,15 @@ export default function App() {
             <div ref={bottomRef} />
           </div>
 
-          {/* Upload progress */}
-          {uploadProgress && (
-            <UploadBar progress={uploadProgress.pct} fileName={uploadProgress.name} />
+          {/* Reading indicator */}
+          {reading && (
+            <div style={s.pendingBar}>
+              <span style={{ fontSize: 14, color: 'rgba(255,255,255,0.6)' }}>⏳ Carregando arquivo...</span>
+            </div>
           )}
 
-          {/* Pending file preview */}
-          {pendingFile && !uploadProgress && (
+          {/* Pending file */}
+          {pendingFile && !reading && (
             <div style={s.pendingBar}>
               <span style={{ fontSize: 20 }}>{fileIcon(pendingFile.type)}</span>
               <div style={{ flex: 1, minWidth: 0 }}>
@@ -293,7 +258,6 @@ export default function App() {
             </div>
           )}
 
-          {/* Error */}
           {fileError && (
             <div style={s.fileError}>
               {fileError}
@@ -301,15 +265,14 @@ export default function App() {
             </div>
           )}
 
-          {/* Input bar */}
           <div style={s.inputBar}>
             <button
               style={s.attachBtn}
               onClick={() => fileRef.current?.click()}
               title="Anexar arquivo (máx 10MB)"
-              disabled={!!uploadProgress}
+              disabled={reading}
             >
-              📎
+              {reading ? '⏳' : '📎'}
             </button>
             <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={handleFileChange} />
             <textarea
@@ -344,9 +307,7 @@ const css = `
   ::-webkit-scrollbar { width: 4px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 2px; }
-
   .bubble-wrap { max-width: min(78vw, 520px); }
-
   .check-on  { opacity: 1; animation: popIn .35s cubic-bezier(.34,1.56,.64,1) forwards; }
   .check-off { opacity: 0; }
   @keyframes popIn {
@@ -354,143 +315,51 @@ const css = `
     70%  { transform: scale(1.25); }
     100% { transform: scale(1); opacity: 1; }
   }
-
   @media (min-width: 700px) {
     .bubble-wrap { max-width: min(65%, 480px) !important; }
   }
-
   textarea { field-sizing: content; min-height: 40px; max-height: 140px; overflow-y: auto; }
 `
 
 // ── Styles ────────────────────────────────────────────────────
 const s = {
-  page: {
-    height: '100svh', display: 'flex', flexDirection: 'column',
-    background: '#0f0f13', fontFamily: "'Outfit', system-ui, sans-serif",
-    color: '#e8e8ee', overflow: 'hidden',
-  },
-
+  page: { height: '100svh', display: 'flex', flexDirection: 'column', background: '#0f0f13', fontFamily: "'Outfit', system-ui, sans-serif", color: '#e8e8ee', overflow: 'hidden' },
   loginOuter: { flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px 16px' },
-  loginCard: {
-    width: '100%', maxWidth: 400,
-    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16,
-    background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)',
-    borderRadius: 20, padding: '40px 32px',
-  },
+  loginCard: { width: '100%', maxWidth: 400, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 20, padding: '40px 32px' },
   loginIcon: { fontSize: 52, lineHeight: 1 },
   loginTitle: { fontSize: 26, fontWeight: 600, color: '#fff', letterSpacing: '-0.02em' },
   loginSub: { fontSize: 14, color: 'rgba(255,255,255,0.4)', textAlign: 'center' },
-  nameInput: {
-    width: '100%', background: 'rgba(255,255,255,0.06)',
-    border: '1.5px solid rgba(255,255,255,0.12)', borderRadius: 12,
-    padding: '13px 16px', color: '#fff', fontSize: 16, outline: 'none', fontFamily: 'inherit',
-  },
-  joinBtn: {
-    width: '100%', background: '#4f8ef7', border: 'none',
-    borderRadius: 12, padding: '14px', color: '#fff',
-    fontSize: 16, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
-  },
-
-  header: {
-    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-    padding: '13px 18px', borderBottom: '1px solid rgba(255,255,255,0.07)',
-    background: 'rgba(15,15,19,0.95)', backdropFilter: 'blur(8px)', flexShrink: 0, zIndex: 10,
-  },
+  nameInput: { width: '100%', background: 'rgba(255,255,255,0.06)', border: '1.5px solid rgba(255,255,255,0.12)', borderRadius: 12, padding: '13px 16px', color: '#fff', fontSize: 16, outline: 'none', fontFamily: 'inherit' },
+  joinBtn: { width: '100%', background: '#4f8ef7', border: 'none', borderRadius: 12, padding: '14px', color: '#fff', fontSize: 16, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' },
+  header: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '13px 18px', borderBottom: '1px solid rgba(255,255,255,0.07)', background: 'rgba(15,15,19,0.95)', backdropFilter: 'blur(8px)', flexShrink: 0, zIndex: 10 },
   headerLeft: { display: 'flex', alignItems: 'center', gap: 8 },
   headerIcon: { fontSize: 20 },
   headerTitle: { fontSize: 16, fontWeight: 600, color: '#fff' },
   headerRight: { display: 'flex', alignItems: 'center', gap: 8 },
   dot: { width: 8, height: 8, borderRadius: '50%', background: '#4ade80', boxShadow: '0 0 6px #4ade80' },
   onlineCount: { fontSize: 12, color: 'rgba(255,255,255,0.4)' },
-  exitBtn: {
-    background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
-    borderRadius: 8, padding: '5px 13px', color: 'rgba(255,255,255,0.5)',
-    fontSize: 12, cursor: 'pointer', fontFamily: 'inherit',
-  },
-
-  desktopWrapper: {
-    flex: 1, display: 'flex', overflow: 'hidden',
-    justifyContent: 'center',
-  },
-  chatPanel: {
-    flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden',
-    maxWidth: 720,
-    borderLeft: '1px solid rgba(255,255,255,0.05)',
-    borderRight: '1px solid rgba(255,255,255,0.05)',
-  },
-
-  msgArea: {
-    flex: 1, overflowY: 'auto',
-    padding: '16px 14px 8px',
-    display: 'flex', flexDirection: 'column', gap: 3,
-  },
+  exitBtn: { background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, padding: '5px 13px', color: 'rgba(255,255,255,0.5)', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit' },
+  desktopWrapper: { flex: 1, display: 'flex', overflow: 'hidden', justifyContent: 'center' },
+  chatPanel: { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', maxWidth: 720, borderLeft: '1px solid rgba(255,255,255,0.05)', borderRight: '1px solid rgba(255,255,255,0.05)' },
+  msgArea: { flex: 1, overflowY: 'auto', padding: '16px 14px 8px', display: 'flex', flexDirection: 'column', gap: 3 },
   empty: { textAlign: 'center', color: 'rgba(255,255,255,0.2)', marginTop: 80, fontSize: 14 },
   row: { display: 'flex', marginBottom: 2 },
   senderName: { fontSize: 11, fontWeight: 600, color: 'rgba(255,255,255,0.35)', paddingLeft: 12, marginBottom: 3 },
-  bubbleMine: {
-    background: '#4f8ef7', borderRadius: '18px 18px 4px 18px',
-    padding: '9px 12px', display: 'flex', alignItems: 'flex-end', gap: 8,
-  },
-  bubbleOther: {
-    background: 'rgba(255,255,255,0.09)', borderRadius: '18px 18px 18px 4px',
-    padding: '9px 12px', display: 'flex', alignItems: 'flex-end', gap: 8,
-  },
+  bubbleMine: { background: '#4f8ef7', borderRadius: '18px 18px 4px 18px', padding: '9px 12px', display: 'flex', alignItems: 'flex-end', gap: 8 },
+  bubbleOther: { background: 'rgba(255,255,255,0.09)', borderRadius: '18px 18px 18px 4px', padding: '9px 12px', display: 'flex', alignItems: 'flex-end', gap: 8 },
   msgText: { fontSize: 15, lineHeight: 1.5, color: '#fff', wordBreak: 'break-word' },
   metaCol: { display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2, flexShrink: 0, paddingBottom: 1 },
   msgTime: { fontSize: 10, color: 'rgba(255,255,255,0.4)', whiteSpace: 'nowrap' },
   check: { fontSize: 13, color: '#4ade80', fontWeight: 700, lineHeight: 1 },
-
-  uploadBar: {
-    display: 'flex', alignItems: 'center', gap: 10,
-    margin: '0 12px 6px', padding: '10px 14px',
-    background: 'rgba(79,142,247,0.12)', border: '1px solid rgba(79,142,247,0.25)',
-    borderRadius: 12,
-  },
-  progressOuter: { width: 80, height: 4, background: 'rgba(255,255,255,0.1)', borderRadius: 2, overflow: 'hidden', flexShrink: 0 },
-  progressInner: { height: '100%', background: '#4f8ef7', borderRadius: 2, transition: 'width 0.2s' },
-
-  pendingBar: {
-    display: 'flex', alignItems: 'center', gap: 10,
-    margin: '0 12px 6px', padding: '10px 14px',
-    background: 'rgba(79,142,247,0.15)', border: '1px solid rgba(79,142,247,0.3)',
-    borderRadius: 12,
-  },
+  pendingBar: { display: 'flex', alignItems: 'center', gap: 10, margin: '0 12px 6px', padding: '10px 14px', background: 'rgba(79,142,247,0.15)', border: '1px solid rgba(79,142,247,0.3)', borderRadius: 12 },
   pendingName: { fontSize: 13, fontWeight: 600, color: '#fff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
   pendingSize: { fontSize: 11, color: 'rgba(255,255,255,0.4)', marginTop: 2 },
   removePending: { background: 'none', border: 'none', color: 'rgba(255,255,255,0.4)', fontSize: 16, cursor: 'pointer', padding: '0 2px' },
-
-  fileError: {
-    margin: '0 12px 6px', padding: '8px 14px',
-    background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.3)',
-    borderRadius: 10, fontSize: 13, color: '#f87171',
-    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-  },
+  fileError: { margin: '0 12px 6px', padding: '8px 14px', background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 10, fontSize: 13, color: '#f87171', display: 'flex', alignItems: 'center', justifyContent: 'space-between' },
   clearErr: { background: 'none', border: 'none', color: '#f87171', cursor: 'pointer', fontSize: 14 },
-
-  inputBar: {
-    display: 'flex', gap: 8, padding: '10px 12px',
-    borderTop: '1px solid rgba(255,255,255,0.07)',
-    background: 'rgba(0,0,0,0.25)', flexShrink: 0, alignItems: 'flex-end',
-  },
-  attachBtn: {
-    width: 42, height: 42, borderRadius: 12,
-    background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
-    fontSize: 18, cursor: 'pointer', flexShrink: 0,
-    display: 'flex', alignItems: 'center', justifyContent: 'center',
-  },
-  textarea: {
-    flex: 1, background: 'rgba(255,255,255,0.07)',
-    border: '1.5px solid rgba(255,255,255,0.1)', borderRadius: 12,
-    padding: '10px 14px', color: '#fff', fontSize: 15,
-    fontFamily: 'inherit', outline: 'none', resize: 'none', lineHeight: 1.5,
-  },
-  sendBtn: {
-    width: 42, height: 42, borderRadius: 12, background: '#4f8ef7',
-    border: 'none', color: '#fff', fontSize: 17, cursor: 'pointer',
-    flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
-  },
-  hint: {
-    textAlign: 'center', fontSize: 10, color: 'rgba(255,255,255,0.18)',
-    padding: '4px 0 8px', background: 'rgba(0,0,0,0.25)', flexShrink: 0,
-  },
+  inputBar: { display: 'flex', gap: 8, padding: '10px 12px', borderTop: '1px solid rgba(255,255,255,0.07)', background: 'rgba(0,0,0,0.25)', flexShrink: 0, alignItems: 'flex-end' },
+  attachBtn: { width: 42, height: 42, borderRadius: 12, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', fontSize: 18, cursor: 'pointer', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' },
+  textarea: { flex: 1, background: 'rgba(255,255,255,0.07)', border: '1.5px solid rgba(255,255,255,0.1)', borderRadius: 12, padding: '10px 14px', color: '#fff', fontSize: 15, fontFamily: 'inherit', outline: 'none', resize: 'none', lineHeight: 1.5 },
+  sendBtn: { width: 42, height: 42, borderRadius: 12, background: '#4f8ef7', border: 'none', color: '#fff', fontSize: 17, cursor: 'pointer', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' },
+  hint: { textAlign: 'center', fontSize: 10, color: 'rgba(255,255,255,0.18)', padding: '4px 0 8px', background: 'rgba(0,0,0,0.25)', flexShrink: 0 },
 }
