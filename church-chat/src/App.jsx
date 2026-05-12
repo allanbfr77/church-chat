@@ -38,6 +38,12 @@ function readAsDataURL(file) {
   })
 }
 
+// ── Logo Component ───────────────────────────────────────────
+function Logo({ size = 'lg' }) {
+  const h = size === 'lg' ? 90 : 38
+  return <img src="/images/logo.png" style={{ height: h, objectFit: 'contain', display: 'block' }} alt="Nova Vida Botafogo" />
+}
+
 // ── User Color ────────────────────────────────────────────────
 const USER_COLORS = [
   '#FFD700', // gold
@@ -305,10 +311,11 @@ export default function App() {
   // ── Login ──
   if (!joined) return (
     <div style={s.page}>
+      <div style={s.bgBlur} />
       <style>{css}</style>
       <div style={s.loginOuter}>
         <div style={s.loginCard}>
-          <h1 style={s.loginTitle}>Chat - INVB</h1>
+          <Logo size="lg" />
           <p style={s.loginSub}>Entre com seu nome para começar</p>
           <input
             style={s.nameInput} placeholder="Seu nome..." value={name}
@@ -328,12 +335,13 @@ export default function App() {
   // ── Chat ──
   return (
     <div style={s.page}>
+      <div style={s.bgBlur} />
       <style>{css}</style>
       {showOnline && <OnlineModal users={onlineUsers} onClose={() => setShowOnline(false)} />}
 
       <div style={s.header}>
         <div style={s.headerLeft}>
-          <span style={s.headerTitle}>Chat - INVB</span>
+          <Logo size="sm" />
         </div>
         <div style={s.headerRight}>
           <button style={s.onlineBtn} onClick={() => setShowOnline(v => !v)}>
@@ -441,7 +449,7 @@ export default function App() {
 
 // ── CSS ───────────────────────────────────────────────────────
 const css = `
-  @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=Bebas+Neue&display=swap');
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   html, body, #root { height: 100%; }
   body { overflow: hidden; }
@@ -473,10 +481,11 @@ const GOLD_DIM = 'rgba(212,175,55,0.25)'
 const GOLD_FAINT = 'rgba(212,175,55,0.08)'
 
 const s = {
-  page: { height: '100svh', display: 'flex', flexDirection: 'column', background: '#000000', fontFamily: "'Outfit', system-ui, sans-serif", color: '#e8e8ee', overflow: 'hidden' },
+  page: { height: '100svh', display: 'flex', flexDirection: 'column', background: '#000', position: 'relative', fontFamily: "'Outfit', system-ui, sans-serif", color: '#e8e8ee', overflow: 'hidden' },
+  bgBlur: { position: 'absolute', inset: 0, backgroundImage: 'url(/images/image.jpg)', backgroundSize: 'cover', backgroundPosition: 'center', filter: 'blur(1px)', transform: 'scale(1.1)', opacity: 1.50, zIndex: 0, pointerEvents: 'none' },
 
   // Login
-  loginOuter: { flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px 16px' },
+  loginOuter: { flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px 16px', position: 'relative', zIndex: 1 },
   loginCard: {
     width: '100%', maxWidth: 400, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 18,
     background: '#080808', border: `1px solid ${GOLD_DIM}`, borderRadius: 20, padding: '44px 36px',
@@ -499,7 +508,7 @@ const s = {
   header: {
     display: 'flex', alignItems: 'center', justifyContent: 'space-between',
     padding: '12px 18px', borderBottom: `1px solid ${GOLD_DIM}`,
-    background: '#050505', backdropFilter: 'blur(8px)', flexShrink: 0, zIndex: 10,
+    background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(8px)', flexShrink: 0, zIndex: 10, position: 'relative',
   },
   headerLeft: { display: 'flex', alignItems: 'center', gap: 10 },
   headerTitle: { fontSize: 16, fontWeight: 700, color: GOLD, letterSpacing: '0.03em' },
@@ -519,7 +528,7 @@ const s = {
   },
 
   // Layout
-  desktopWrapper: { flex: 1, display: 'flex', overflow: 'hidden', justifyContent: 'center' },
+  desktopWrapper: { flex: 1, display: 'flex', overflow: 'hidden', justifyContent: 'center', position: 'relative', zIndex: 1 },
   chatPanel: {
     flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', maxWidth: 720,
     borderLeft: `1px solid ${GOLD_DIM}`, borderRight: `1px solid ${GOLD_DIM}`,
