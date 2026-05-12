@@ -260,12 +260,11 @@ export default function App() {
         knownIdsRef.current = new Set(msgs.map(m => m.id))
       } else {
         // Verificar mensagens novas para notificar
-        const joinTime = joinTimeRef.current
         msgs.forEach(m => {
           if (!knownIdsRef.current.has(m.id)) {
             knownIdsRef.current.add(m.id)
-            // Só notifica se: não é minha mensagem E chegou após o login
-            if (m.uid !== userId && (m.ts || 0) >= joinTime) {
+            // Só notifica se não é minha própria mensagem
+            if (m.uid !== userId) {
               showNotif(m.name || 'Alguém', m.text || '')
             }
           }
