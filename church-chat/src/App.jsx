@@ -200,14 +200,22 @@ export default function App() {
   }
 
   // Função global de notificação — não depende de closure
-  function fireNotif(senderName, text) {
+  // messageId em tag evita que o Chrome substitua todas pelas mesmas (tag fixa = só a última aparece)
+  function fireNotif(senderName, text, messageId) {
     if (typeof Notification === 'undefined') return
     if (Notification.permission !== 'granted') return
     const body = text
       ? (text.length > 80 ? text.slice(0, 80) + '…' : text)
       : '📎 Arquivo recebido'
+    const tag = messageId ? `chat-${messageId}` : `chat-${Date.now()}`
     try {
-      new Notification(senderName, { body, icon: '/images/notif-icon.png', tag: 'chat-msg' })
+      new Notification(senderName, {
+        body,
+        icon: '/images/notif-icon.png',
+        tag,
+        lang: 'pt-BR',
+        silent: false,
+      })
     } catch (e) { console.warn('Notif error:', e) }
   }
 
@@ -240,6 +248,7 @@ export default function App() {
     setAdminCode('')
     setShowAdminInput(false)
     setShowOnline(false)
+    knownIdsRef.current = null
   }
 
   // Re-checa permissão quando o usuário volta para a aba (após mudar nas config do Chrome)
@@ -256,20 +265,34 @@ export default function App() {
     const q = query(dbRef(db, 'messages'), limitToLast(100))
     const unsub = onValue(q, snap => {
       const data = snap.val()
-      if (!data) { setMessages([]); setOnlineUsers([]); knownIdsRef.current = new Set(); return }
+      // Não usar Set() aqui: deixa knownIdsRef como null até o primeiro snapshot com dados.
+      // Caso contrário, um snapshot vazio seguido do histórico faz o Chrome disparar dezenas de notificações
+      // de uma vez (substituindo na bandeja) e o site pode ser silenciado ou parecer "sem notificação".
+      if (!data) {
+        setMessages([])
+        setOnlineUsers([])
+        return
+      }
       const msgs = Object.entries(data).map(([id, v]) => ({ id, ...v }))
       msgs.sort((a, b) => (a.ts || 0) - (b.ts || 0))
+      const joinT = joinTimeRef.current
 
-      // Primeira carga: marcar todas as mensagens existentes como "já vistas"
+      // Primeira carga com dados: marcar tudo como visto; notificar só mensagens de outros com ts >= entrada na sala
+      // (corrige sala vazia → primeira mensagem, que antes era tratada só como "seed" e nunca notificava)
       if (knownIdsRef.current === null) {
         knownIdsRef.current = new Set(msgs.map(m => m.id))
+        msgs.forEach(m => {
+          if (m.uid === userIdRef.current) return
+          if ((m.ts || 0) >= joinT) {
+            fireNotif(m.name || 'Alguém', m.text || '', m.id)
+          }
+        })
       } else {
-        // Verificar mensagens novas para notificar
         msgs.forEach(m => {
           if (!knownIdsRef.current.has(m.id)) {
             knownIdsRef.current.add(m.id)
             if (m.uid !== userIdRef.current) {
-              fireNotif(m.name || 'Alguém', m.text || '')
+              fireNotif(m.name || 'Alguém', m.text || '', m.id)
             }
           }
         })
@@ -432,7 +455,7 @@ export default function App() {
         <div style={{ ...s.notifBanner, background: 'rgba(74,222,128,0.08)', borderBottomColor: 'rgba(74,222,128,0.2)' }}>
           <span style={{ color: '#4ade80', fontSize: 12 }}>✅ Notificações ativas</span>
           <button style={{ ...s.notifBannerBtn, background: '#4ade80' }}
-            onClick={() => fireNotif('Chat - Nova Vida', '🔔 Notificações estão funcionando!')}>
+            onClick={() => fireNotif('Chat - Nova Vida', '🔔 Notificações estão funcionando!', null)}>
             Testar
           </button>
         </div>
