@@ -332,9 +332,10 @@ export default function App() {
 
   // ── Login ──
   if (!joined) return (
+    <>
+    <style>{css}</style>
     <div style={s.page}>
       <div style={s.bgBlur} />
-      <style>{css}</style>
       <div style={s.loginOuter}>
         <div style={s.loginCard}>
           <Logo size="lg" />
@@ -366,13 +367,15 @@ export default function App() {
         </div>
       </div>
     </div>
+    </>
   )
 
   // ── Chat ──
   return (
+    <>
+    <style>{css}</style>
     <div style={s.page}>
       <div style={s.bgBlur} />
-      <style>{css}</style>
       {showOnline && <OnlineModal users={onlineUsers} onClose={() => setShowOnline(false)} />}
 
       <div style={s.header}>
@@ -380,11 +383,6 @@ export default function App() {
           <Logo size="sm" />
         </div>
         <div style={s.headerRight}>
-          {notifPerm === 'default' && (
-            <button style={s.bellBtn} onClick={requestNotifPermission} title="Ativar notificações">
-              🔕
-            </button>
-          )}
           {isAdmin && (
             <button
               style={s.clearBtn}
@@ -402,6 +400,18 @@ export default function App() {
           <button style={s.exitBtn} onClick={handleExit}>Sair</button>
         </div>
       </div>
+
+      {notifPerm !== 'granted' && notifPerm !== 'unsupported' && (
+        <div style={s.notifBanner}>
+          {notifPerm === 'denied'
+            ? <span>🔕 Notificações bloqueadas — ative em <b>Configurações do Chrome</b> para este site</span>
+            : <span>🔔 Ative notificações para avisos de novas mensagens</span>
+          }
+          {notifPerm === 'default' && (
+            <button style={s.notifBannerBtn} onClick={requestNotifPermission}>Ativar</button>
+          )}
+        </div>
+      )}
 
       <div style={s.desktopWrapper}>
         <div style={s.chatPanel}>
@@ -490,11 +500,10 @@ export default function App() {
               {sending ? '…' : '➤'}
             </button>
           </div>
-          <div style={s.hint}>Enter para enviar · Shift+Enter nova linha · Máx 10MB</div>
-
         </div>
       </div>
     </div>
+    </>
   )
 }
 
@@ -502,8 +511,7 @@ export default function App() {
 const css = `
   @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=Bebas+Neue&display=swap');
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  html, body, #root { height: 100%; }
-  body { overflow: hidden; }
+  html, body { margin: 0; padding: 0; overflow: hidden; }
   ::-webkit-scrollbar { width: 4px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: rgba(212,175,55,0.2); border-radius: 2px; }
@@ -532,8 +540,8 @@ const GOLD_DIM = 'rgba(212,175,55,0.25)'
 const GOLD_FAINT = 'rgba(212,175,55,0.08)'
 
 const s = {
-  page: { height: '100svh', display: 'flex', flexDirection: 'column', background: '#000', position: 'relative', isolation: 'isolate', fontFamily: "'Outfit', system-ui, sans-serif", color: '#e8e8ee', overflow: 'hidden' },
-  bgBlur: { position: 'absolute', inset: 0, backgroundImage: 'url(/images/image.jpg)', backgroundSize: 'cover', backgroundPosition: 'center', filter: 'blur(5px)', transform: 'scale(1.08)', opacity: 0.45, zIndex: -1, pointerEvents: 'none' },
+  page: { position: 'fixed', inset: 0, display: 'flex', flexDirection: 'column', background: '#000', isolation: 'isolate', fontFamily: "'Outfit', system-ui, sans-serif", color: '#e8e8ee' },
+  bgBlur: { position: 'fixed', inset: 0, backgroundImage: 'url(/images/image.jpg)', backgroundSize: 'cover', backgroundPosition: 'center', filter: 'blur(5px)', transform: 'scale(1.08)', opacity: 0.45, zIndex: -1, pointerEvents: 'none' },
 
   // Login
   loginOuter: { flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px 16px', position: 'relative', zIndex: 1 },
@@ -558,8 +566,9 @@ const s = {
   // Header
   header: {
     display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-    padding: '12px 18px', borderBottom: `1px solid ${GOLD_DIM}`,
-    background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(8px)', flexShrink: 0, zIndex: 10, position: 'relative',
+    padding: '10px 18px', borderBottom: `2px solid rgba(212,175,55,0.45)`,
+    background: '#0a0a0a', flexShrink: 0, zIndex: 10, position: 'relative',
+    boxShadow: '0 2px 20px rgba(0,0,0,0.8)',
   },
   headerLeft: { display: 'flex', alignItems: 'center', gap: 10 },
   headerTitle: { fontSize: 16, fontWeight: 700, color: GOLD, letterSpacing: '0.03em' },
@@ -646,6 +655,15 @@ const s = {
 
   // Admin / Notif extras
   adminToggleBtn: { background: 'none', border: 'none', color: 'rgba(212,175,55,0.35)', fontSize: 11, cursor: 'pointer', fontFamily: 'inherit', textDecoration: 'underline', padding: 0 },
-  bellBtn: { background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, padding: '5px 10px', fontSize: 14, cursor: 'pointer', color: '#fff' },
   clearBtn: { background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 8, padding: '5px 12px', color: '#f87171', fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' },
+  notifBanner: {
+    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12,
+    padding: '8px 16px', flexShrink: 0, position: 'relative', zIndex: 9,
+    background: 'rgba(212,175,55,0.1)', borderBottom: '1px solid rgba(212,175,55,0.2)',
+    fontSize: 12, color: 'rgba(255,255,255,0.7)',
+  },
+  notifBannerBtn: {
+    background: 'linear-gradient(135deg, #C9A84C, #FFD700)', border: 'none', borderRadius: 6,
+    padding: '4px 14px', color: '#000', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit',
+  },
 }
