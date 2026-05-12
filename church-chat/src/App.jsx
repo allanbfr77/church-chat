@@ -11,6 +11,13 @@ import {
 
 const ADMIN_CODE = 'invb@admin'
 
+// Emojis rápidos (o teclado do sistema também funciona no campo de mensagem)
+const EMOJI_PALETTE = [
+  '😀', '😂', '🥰', '😍', '😘', '😊', '😅', '🤣', '😭', '😢', '🙏',
+  '👍', '👎', '👏', '🙌', '🤝', '💪', '🔥', '❤️', '💯', '✨', '🎉',
+  '👀', '😎', '🤔', '😴', '😤', '🤗', '✅', '❌', '⭐', '💕', '💬',
+]
+
 // ── Helpers ──────────────────────────────────────────────────
 function uid() { return Math.random().toString(36).slice(2) + Date.now().toString(36) }
 function timeStr(ts) {
@@ -184,9 +191,11 @@ export default function App() {
   const [notifPerm, setNotifPerm]     = useState(() =>
     typeof Notification !== 'undefined' ? Notification.permission : 'unsupported'
   )
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false)
   const bottomRef    = useRef(null)
   const textareaRef  = useRef(null)
   const fileRef      = useRef(null)
+  const emojiPickerRef = useRef(null)
   const knownIdsRef  = useRef(null)
   const joinTimeRef  = useRef(Date.now())
   const userIdRef    = useRef(userId)
@@ -314,6 +323,37 @@ export default function App() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
+
+  useEffect(() => {
+    if (!showEmojiPicker) return
+    const close = e => {
+      if (emojiPickerRef.current && !emojiPickerRef.current.contains(e.target)) {
+        setShowEmojiPicker(false)
+      }
+    }
+    document.addEventListener('mousedown', close)
+    return () => document.removeEventListener('mousedown', close)
+  }, [showEmojiPicker])
+
+  const insertEmoji = emoji => {
+    const el = textareaRef.current
+    if (!el) {
+      setInput(prev => prev + emoji)
+      setShowEmojiPicker(false)
+      return
+    }
+    const start = el.selectionStart ?? input.length
+    const end = el.selectionEnd ?? input.length
+    const next = input.slice(0, start) + emoji + input.slice(end)
+    setInput(next)
+    setShowEmojiPicker(false)
+    requestAnimationFrame(() => {
+      el.focus()
+      // setSelectionRange usa índices UTF-16; string.length está alinhado a isso
+      const pos = start + emoji.length
+      el.setSelectionRange(pos, pos)
+    })
+  }
 
   const send = async () => {
     if (!input.trim() && !pendingFile) return
@@ -524,6 +564,34 @@ export default function App() {
           )}
 
           <div style={s.inputBar}>
+            <div ref={emojiPickerRef} style={s.emojiPickerWrap}>
+              <button
+                type="button"
+                style={{ ...s.attachBtn, fontSize: 20 }}
+                onClick={() => setShowEmojiPicker(v => !v)}
+                title="Emoticons"
+                aria-expanded={showEmojiPicker}
+                aria-haspopup="true"
+              >
+                😊
+              </button>
+              {showEmojiPicker && (
+                <div style={s.emojiPopover} role="listbox" aria-label="Emoticons">
+                  {EMOJI_PALETTE.map((emo, i) => (
+                    <button
+                      type="button"
+                      key={`${emo}-${i}`}
+                      className="emoji-panel-btn"
+                      style={s.emojiCell}
+                      onClick={() => insertEmoji(emo)}
+                      title={emo}
+                    >
+                      {emo}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
             <button
               style={s.attachBtn}
               onClick={() => fileRef.current?.click()}
@@ -580,6 +648,10 @@ const css = `
   textarea::placeholder { color: rgba(255,255,255,0.25); }
   input:focus { border-color: rgba(212,175,55,0.6) !important; box-shadow: 0 0 0 3px rgba(212,175,55,0.08); }
   textarea:focus { border-color: rgba(212,175,55,0.5) !important; }
+  .emoji-panel-btn:hover {
+    background: rgba(212,175,55,0.12) !important;
+    border-color: rgba(212,175,55,0.2) !important;
+  }
 `
 
 // ── Styles ────────────────────────────────────────────────────
@@ -687,6 +759,19 @@ const s = {
   attachBtn: {
     width: 42, height: 42, borderRadius: 12, background: GOLD_FAINT, border: `1px solid ${GOLD_DIM}`,
     fontSize: 18, cursor: 'pointer', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+  },
+  emojiPickerWrap: { position: 'relative', flexShrink: 0 },
+  emojiPopover: {
+    position: 'absolute', bottom: 'calc(100% + 8px)', left: 0, zIndex: 50,
+    display: 'grid', gridTemplateColumns: 'repeat(8, 1fr)', gap: 4,
+    padding: 10, maxWidth: 280,
+    background: '#121212', border: `1px solid ${GOLD_DIM}`, borderRadius: 14,
+    boxShadow: '0 12px 40px rgba(0,0,0,0.65)',
+  },
+  emojiCell: {
+    width: 34, height: 34, padding: 0, fontSize: 20, lineHeight: 1,
+    background: 'rgba(255,255,255,0.04)', border: '1px solid transparent', borderRadius: 8,
+    cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
   },
   textarea: {
     flex: 1, background: '#0d0d0d', border: `1.5px solid rgba(255,255,255,0.08)`,
