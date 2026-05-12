@@ -204,7 +204,7 @@ export default function App() {
     const body = text
       ? (text.length > 80 ? text.slice(0, 80) + '…' : text)
       : '📎 Arquivo recebido'
-    new Notification(senderName, { body, icon: '/images/logo.png', tag: 'chat-msg' })
+    new Notification(senderName, { body, icon: '/images/notif-icon.png', tag: 'chat-msg' })
   }
 
   // ── Admin ──
@@ -430,7 +430,18 @@ export default function App() {
         <div style={{ ...s.notifBanner, background: 'rgba(74,222,128,0.08)', borderBottomColor: 'rgba(74,222,128,0.2)' }}>
           <span style={{ color: '#4ade80', fontSize: 12 }}>✅ Notificações ativas</span>
           <button style={{ ...s.notifBannerBtn, background: '#4ade80' }}
-            onClick={() => new Notification('Teste ✓', { body: 'Notificações funcionando!', icon: '/images/logo.png' })}>
+            onClick={() => {
+              try {
+                const n = new Notification('Chat - Nova Vida', {
+                  body: '🔔 Notificações estão funcionando!',
+                  icon: '/images/notif-icon.png',
+                  requireInteraction: false,
+                })
+                n.onerror = (e) => alert('Erro na notificação: ' + e)
+              } catch(e) {
+                alert('Erro: ' + e.message + '\n\nVerifique:\n• Notificações do Chrome habilitadas no Windows\n  (Configurações → Sistema → Notificações → Google Chrome → Ativar)')
+              }
+            }}>
             Testar
           </button>
         </div>
