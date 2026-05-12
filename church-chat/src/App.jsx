@@ -740,7 +740,6 @@ export default function App() {
               const isEditing = editingId === m.id
               const busy     = msgActionBusy === m.id
               const canEditMine = mine && !m.editedOnce
-              const rCounts = reactionCounts(m.reactions)
 
               return (
                 <div
@@ -755,48 +754,19 @@ export default function App() {
                 >
                   <div style={s.msgRowWithReaction}>
                     {mine && !isEditing && (
-                      <div
-                        ref={reactionPickMsgId === m.id ? reactionWrapRef : undefined}
-                        style={{ ...s.reactionTriggerWrap, alignItems: mine ? 'flex-end' : 'flex-start' }}
-                      >
-                        <button
-                          type="button"
-                          className="reaction-add-btn"
-                          style={s.reactionOutlineBtn}
-                          aria-expanded={reactionPickMsgId === m.id}
-                          aria-haspopup="menu"
-                          aria-label="Reagir à mensagem"
-                          onClick={() => {
-                            setShowEmojiPicker(false)
-                            setReactionPickMsgId(prev => (prev === m.id ? null : m.id))
-                          }}
-                        >
-                          <span style={s.reactionOutlineGlyph}>+</span>
-                        </button>
-                        {reactionPickMsgId === m.id && (
-                          <div style={s.reactionPopover} role="menu">
-                            {REACTION_CHOICES.map((emo, idx) => {
-                              const n = rCounts[emo] || 0
-                              return (
-                                <button
-                                  key={emo}
-                                  type="button"
-                                  className="reaction-pop-item"
-                                  role="menuitem"
-                                  style={{
-                                    ...s.reactionPopBtn,
-                                    borderRight: idx < REACTION_CHOICES.length - 1 ? '1px solid rgba(255,255,255,0.1)' : 'none',
-                                  }}
-                                  onClick={() => void setMessageReaction(m.id, emo)}
-                                >
-                                  <span style={s.reactionPopEmoji}>{emo}</span>
-                                  {n > 0 && <span style={s.reactionPopCount}>{n}</span>}
-                                </button>
-                              )
-                            })}
-                          </div>
-                        )}
-                      </div>
+                      <MessageReactionCluster
+                        message={m}
+                        userId={userId}
+                        mine
+                        isEditing={isEditing}
+                        pickerOpen={reactionPickMsgId === m.id}
+                        onTogglePicker={() => {
+                          setShowEmojiPicker(false)
+                          setReactionPickMsgId(prev => (prev === m.id ? null : m.id))
+                        }}
+                        outerRef={reactionPickMsgId === m.id ? reactionWrapRef : undefined}
+                        onPickReaction={setMessageReaction}
+                      />
                     )}
                     <div className="bubble-wrap" style={{ flexShrink: 0 }}>
                     {showName && (
@@ -874,48 +844,19 @@ export default function App() {
                     )}
                   </div>
                     {!mine && !isEditing && (
-                      <div
-                        ref={reactionPickMsgId === m.id ? reactionWrapRef : undefined}
-                        style={{ ...s.reactionTriggerWrap, alignItems: mine ? 'flex-end' : 'flex-start' }}
-                      >
-                        <button
-                          type="button"
-                          className="reaction-add-btn"
-                          style={s.reactionOutlineBtn}
-                          aria-expanded={reactionPickMsgId === m.id}
-                          aria-haspopup="menu"
-                          aria-label="Reagir à mensagem"
-                          onClick={() => {
-                            setShowEmojiPicker(false)
-                            setReactionPickMsgId(prev => (prev === m.id ? null : m.id))
-                          }}
-                        >
-                          <span style={s.reactionOutlineGlyph}>+</span>
-                        </button>
-                        {reactionPickMsgId === m.id && (
-                          <div style={s.reactionPopover} role="menu">
-                            {REACTION_CHOICES.map((emo, idx) => {
-                              const n = rCounts[emo] || 0
-                              return (
-                                <button
-                                  key={emo}
-                                  type="button"
-                                  className="reaction-pop-item"
-                                  role="menuitem"
-                                  style={{
-                                    ...s.reactionPopBtn,
-                                    borderRight: idx < REACTION_CHOICES.length - 1 ? '1px solid rgba(255,255,255,0.1)' : 'none',
-                                  }}
-                                  onClick={() => void setMessageReaction(m.id, emo)}
-                                >
-                                  <span style={s.reactionPopEmoji}>{emo}</span>
-                                  {n > 0 && <span style={s.reactionPopCount}>{n}</span>}
-                                </button>
-                              )
-                            })}
-                          </div>
-                        )}
-                      </div>
+                      <MessageReactionCluster
+                        message={m}
+                        userId={userId}
+                        mine={false}
+                        isEditing={isEditing}
+                        pickerOpen={reactionPickMsgId === m.id}
+                        onTogglePicker={() => {
+                          setShowEmojiPicker(false)
+                          setReactionPickMsgId(prev => (prev === m.id ? null : m.id))
+                        }}
+                        outerRef={reactionPickMsgId === m.id ? reactionWrapRef : undefined}
+                        onPickReaction={setMessageReaction}
+                      />
                     )}
                   </div>
                 </div>
@@ -1110,7 +1051,12 @@ const s = {
     flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', maxWidth: 720,
     borderLeft: `1px solid ${GOLD_DIM}`, borderRight: `1px solid ${GOLD_DIM}`,
   },
-  msgArea: { flex: 1, overflowY: 'auto', padding: '16px 14px 8px', display: 'flex', flexDirection: 'column', gap: 3 },
+  msgArea: {
+    flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 3,
+    background: 'rgba(0,0,0,0.4)',
+    padding:
+      '16px calc(14px + env(safe-area-inset-right, 0px)) 10px calc(14px + env(safe-area-inset-left, 0px))',
+  },
   empty: { textAlign: 'center', color: 'rgba(212,175,55,0.2)', marginTop: 80, fontSize: 14 },
   row: { display: 'flex', marginBottom: 2 },
   rowSystem: {
@@ -1172,9 +1118,22 @@ const s = {
     display: 'inline-flex', flexDirection: 'row', alignItems: 'flex-end', gap: 8,
     maxWidth: 'min(100%, 520px)', position: 'relative',
   },
-  reactionTriggerWrap: {
-    position: 'relative', flexShrink: 0, display: 'flex', flexDirection: 'column',
-    alignSelf: 'flex-end', paddingBottom: 2,
+  reactionClusterRow: {
+    position: 'relative', flexShrink: 0, display: 'flex', flexDirection: 'row', flexWrap: 'wrap',
+    alignItems: 'center', gap: 6, paddingBottom: 2, maxWidth: 280,
+  },
+  reactionChip: {
+    display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 4,
+    padding: '3px 9px', borderRadius: 14,
+    background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
+    fontSize: 13, lineHeight: 1, userSelect: 'none', pointerEvents: 'none',
+  },
+  reactionChipEmoji: { fontSize: 15, lineHeight: 1 },
+  reactionChipCount: { fontSize: 12, fontWeight: 700, color: 'rgba(255,255,255,0.45)', minWidth: 14, textAlign: 'center' },
+  reactionPickerAnchor: { position: 'relative', flexShrink: 0, display: 'inline-flex' },
+  reactionOutlineBtnActive: {
+    borderColor: 'rgba(212,175,55,0.45)',
+    background: 'rgba(212,175,55,0.08)',
   },
   reactionOutlineBtn: {
     width: 30, height: 30, borderRadius: '50%',
@@ -1186,6 +1145,7 @@ const s = {
   reactionOutlineGlyph: {
     fontSize: 18, fontWeight: 300, marginTop: -1, letterSpacing: 0,
   },
+  reactionChosenGlyph: { fontSize: 16, lineHeight: 1, display: 'block' },
   reactionPopover: {
     position: 'absolute', top: 'calc(100% + 8px)', bottom: 'auto', left: '50%', transform: 'translateX(-50%)',
     zIndex: 80,
@@ -1203,7 +1163,8 @@ const s = {
   reactionPopEmoji: { fontSize: 18, lineHeight: 1 },
   reactionPopCount: { fontSize: 11, fontWeight: 600, color: 'rgba(255,255,255,0.38)', minWidth: 16, textAlign: 'center' },
   msgActions: {
-    display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 6, paddingRight: 2,
+    display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 6,
+    paddingRight: 14, paddingLeft: 4, boxSizing: 'border-box', width: '100%',
   },
   msgActionBtn: {
     background: 'none', border: 'none', color: 'rgba(212,175,55,0.55)', fontSize: 11,
@@ -1242,10 +1203,13 @@ const s = {
   },
   clearErr: { background: 'none', border: 'none', color: '#f87171', cursor: 'pointer', fontSize: 14 },
 
-  // Input bar
+  // Input bar (separador discreto — evita faixa dourada grossa junto ao fundo do painel)
   inputBar: {
-    display: 'flex', gap: 8, padding: '10px 12px',
-    borderTop: `1px solid ${GOLD_DIM}`, background: '#050505',
+    display: 'flex', gap: 8,
+    padding:
+      '10px calc(12px + env(safe-area-inset-right, 0px)) max(10px, env(safe-area-inset-bottom, 0px)) calc(12px + env(safe-area-inset-left, 0px))',
+    borderTop: '1px solid rgba(255,255,255,0.08)',
+    background: 'rgba(5,5,5,0.72)',
     flexShrink: 0, alignItems: 'flex-end',
   },
   attachBtn: {
@@ -1335,4 +1299,89 @@ const s = {
     borderRadius: 12, padding: '0 16px', color: '#fff', fontSize: 14, fontWeight: 800,
     cursor: 'pointer', fontFamily: 'inherit', boxShadow: '0 4px 20px rgba(220,38,38,0.25)',
   },
+}
+
+function MessageReactionCluster({
+  message,
+  userId,
+  mine,
+  isEditing,
+  pickerOpen,
+  onTogglePicker,
+  outerRef,
+  onPickReaction,
+}) {
+  if (isEditing) return null
+  const rCounts = reactionCounts(message.reactions)
+  const myReaction = message.reactions?.[userId]
+  const chipEmojis = REACTION_CHOICES.filter(emo => {
+    const n = rCounts[emo] || 0
+    if (n < 1) return false
+    if (n === 1 && myReaction === emo) return false
+    return true
+  })
+
+  return (
+    <div
+      ref={pickerOpen ? outerRef : undefined}
+      style={{
+        ...s.reactionClusterRow,
+        justifyContent: mine ? 'flex-end' : 'flex-start',
+        alignSelf: mine ? 'flex-end' : 'flex-start',
+      }}
+    >
+      {chipEmojis.map(emo => {
+        const n = rCounts[emo] || 0
+        return (
+          <div key={emo} style={s.reactionChip} title={n > 1 ? `${n} reações` : '1 reação'}>
+            <span style={s.reactionChipEmoji}>{emo}</span>
+            {n > 1 && <span style={s.reactionChipCount}>{n}</span>}
+          </div>
+        )
+      })}
+      <div style={s.reactionPickerAnchor}>
+        <button
+          type="button"
+          className="reaction-add-btn"
+          style={{
+            ...s.reactionOutlineBtn,
+            ...(myReaction ? s.reactionOutlineBtnActive : {}),
+          }}
+          aria-expanded={pickerOpen}
+          aria-haspopup="menu"
+          aria-label={myReaction ? 'Alterar ou remover reação' : 'Reagir à mensagem'}
+          onClick={onTogglePicker}
+        >
+          {myReaction ? (
+            <span style={s.reactionChosenGlyph}>{myReaction}</span>
+          ) : (
+            <span style={s.reactionOutlineGlyph}>+</span>
+          )}
+        </button>
+        {pickerOpen && (
+          <div style={s.reactionPopover} role="menu">
+            {REACTION_CHOICES.map((emo, idx) => {
+              const n = rCounts[emo] || 0
+              return (
+                <button
+                  key={emo}
+                  type="button"
+                  className="reaction-pop-item"
+                  role="menuitem"
+                  style={{
+                    ...s.reactionPopBtn,
+                    borderRight: idx < REACTION_CHOICES.length - 1 ? '1px solid rgba(255,255,255,0.1)' : 'none',
+                  }}
+                  onClick={() => void onPickReaction(message.id, emo)}
+                >
+                  <span style={s.reactionPopEmoji}>{emo}</span>
+                  {n > 0 && <span style={s.reactionPopCount}>{n}</span>}
+                </button>
+              )
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  )
 }
