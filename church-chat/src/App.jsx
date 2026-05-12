@@ -4,12 +4,23 @@ import {
   ref as dbRef,
   push,
   remove,
+  update,
+  set,
   onValue,
   query,
   limitToLast,
 } from 'firebase/database'
 
 const ADMIN_CODE = 'invb@admin'
+
+/** Texto gravado no RTDB quando a mensagem é apagada (e exibido no chat) */
+const MSG_APAGADA_FRASE = 'Esta mensagem foi apagada'
+/** Valor antigo — ainda reconhecido como apagada para mensagens já salvas */
+const LEGACY_MSG_SENTINEL = '__MSG_REMOVIDA__'
+
+/** Reações permitidas: uma por usuário por mensagem (substituir ou remover ao repetir) */
+const REACTION_CHOICES = ['👍', '👎', '❤️']
+const REACTION_ALLOWED = new Set(REACTION_CHOICES)
 
 // Emojis rápidos (o teclado do sistema também funciona no campo de mensagem)
 const EMOJI_PALETTE = [
@@ -48,6 +59,28 @@ function readAsDataURL(file) {
   })
 }
 
+/** Mensagem apagada pelo remetente (status, boolean, texto legado ou metadados) */
+function messageIsTombstone(m) {
+  if (!m) return false
+  if (m.status === 'deleted') return true
+  if (m.deleted === true || m.deleted === 1 || m.deleted === 'true' || m.deleted === '1') return true
+  const t = String(m.text ?? '').trim()
+  if (t === LEGACY_MSG_SENTINEL) return true
+  const hasFile = !!(m.file && (m.file.dataUrl || m.file.url || m.file.name))
+  if (typeof m.deletedAt === 'number' && m.deletedAt > 0 && !hasFile && !t) return true
+  if (t === MSG_APAGADA_FRASE && typeof m.deletedAt === 'number' && m.deletedAt > 0) return true
+  return false
+}
+
+function reactionCounts(reactionsRaw) {
+  const counts = { '👍': 0, '👎': 0, '❤️': 0 }
+  if (!reactionsRaw || typeof reactionsRaw !== 'object') return counts
+  for (const v of Object.values(reactionsRaw)) {
+    if (REACTION_ALLOWED.has(v)) counts[v]++
+  }
+  return counts
+}
+
 // ── Logo Component ───────────────────────────────────────────
 function Logo({ size = 'lg' }) {
   const h = size === 'lg' ? 90 : 38
@@ -70,9 +103,10 @@ const USER_COLORS = [
   '#FFD54F', // amber
 ]
 function userColor(name) {
+  const key = (name || '').toLowerCase()
   let hash = 0
-  for (let i = 0; i < name.length; i++) {
-    hash = name.charCodeAt(i) + ((hash << 5) - hash)
+  for (let i = 0; i < key.length; i++) {
+    hash = key.charCodeAt(i) + ((hash << 5) - hash)
     hash |= 0
   }
   return USER_COLORS[Math.abs(hash) % USER_COLORS.length]
@@ -165,7 +199,7 @@ const sm = {
   list: { padding: '6px 0', maxHeight: 260, overflowY: 'auto' },
   userRow: { display: 'flex', alignItems: 'center', gap: 10, padding: '9px 16px' },
   dot: { width: 7, height: 7, borderRadius: '50%', flexShrink: 0 },
-  userName: { fontSize: 14, fontWeight: 600 },
+  userName: { fontSize: 15, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase' },
   empty: { fontSize: 13, color: 'rgba(255,255,255,0.3)', padding: '10px 16px' },
 }
 
@@ -192,10 +226,16 @@ export default function App() {
     typeof Notification !== 'undefined' ? Notification.permission : 'unsupported'
   )
   const [showEmojiPicker, setShowEmojiPicker] = useState(false)
+  const [reactionPickMsgId, setReactionPickMsgId] = useState(null)
+  const [editingId, setEditingId]       = useState(null)
+  const [editDraft, setEditDraft]       = useState('')
+  const [msgActionBusy, setMsgActionBusy] = useState(null)
+  const [confirmDialog, setConfirmDialog]   = useState(null)
   const bottomRef    = useRef(null)
   const textareaRef  = useRef(null)
   const fileRef      = useRef(null)
   const emojiPickerRef = useRef(null)
+  const reactionWrapRef = useRef(null)
   const knownIdsRef  = useRef(null)
   const joinTimeRef  = useRef(Date.now())
   const userIdRef    = useRef(userId)
@@ -229,15 +269,22 @@ export default function App() {
   }
 
   // ── Admin ──
-  const clearChat = async () => {
-    if (!window.confirm('Limpar todo o histórico do chat? Esta ação não pode ser desfeita.')) return
-    setClearing(true)
-    try {
-      await remove(dbRef(db, 'messages'))
-      setMessages([])
-      knownIdsRef.current = new Set()
-    } catch (err) { console.error(err) }
-    setClearing(false)
+  const clearChat = () => {
+    setConfirmDialog({
+      title: 'Limpar histórico',
+      body: 'Limpar todo o histórico do chat? Esta ação não pode ser desfeita.',
+      variant: 'danger',
+      confirmLabel: 'Limpar tudo',
+      async onConfirm() {
+        setClearing(true)
+        try {
+          await remove(dbRef(db, 'messages'))
+          setMessages([])
+          knownIdsRef.current = new Set()
+        } catch (err) { console.error(err) }
+        setClearing(false)
+      },
+    })
   }
 
   const handleJoin = () => {
@@ -291,17 +338,17 @@ export default function App() {
       if (knownIdsRef.current === null) {
         knownIdsRef.current = new Set(msgs.map(m => m.id))
         msgs.forEach(m => {
-          if (m.uid === userIdRef.current) return
+          if (m.uid === userIdRef.current || messageIsTombstone(m)) return
           if ((m.ts || 0) >= joinT) {
-            fireNotif(m.name || 'Alguém', m.text || '', m.id)
+            fireNotif((m.name || 'Alguém').toLocaleUpperCase('pt-BR'), m.text || '', m.id)
           }
         })
       } else {
         msgs.forEach(m => {
           if (!knownIdsRef.current.has(m.id)) {
             knownIdsRef.current.add(m.id)
-            if (m.uid !== userIdRef.current) {
-              fireNotif(m.name || 'Alguém', m.text || '', m.id)
+            if (m.uid !== userIdRef.current && !messageIsTombstone(m)) {
+              fireNotif((m.name || 'Alguém').toLocaleUpperCase('pt-BR'), m.text || '', m.id)
             }
           }
         })
@@ -334,6 +381,27 @@ export default function App() {
     document.addEventListener('mousedown', close)
     return () => document.removeEventListener('mousedown', close)
   }, [showEmojiPicker])
+
+  useEffect(() => {
+    if (!reactionPickMsgId) return
+    const close = e => {
+      if (reactionWrapRef.current && !reactionWrapRef.current.contains(e.target)) {
+        setReactionPickMsgId(null)
+      }
+    }
+    const onKey = e => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setReactionPickMsgId(null)
+      }
+    }
+    document.addEventListener('mousedown', close)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', close)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [reactionPickMsgId])
 
   const insertEmoji = emoji => {
     const el = textareaRef.current
@@ -403,9 +471,151 @@ export default function App() {
 
   const canSend = (input.trim() || pendingFile) && !sending && !reading
 
+  const startEdit = m => {
+    if (m.uid !== userId || messageIsTombstone(m) || m.editedOnce) return
+    setReactionPickMsgId(null)
+    setEditingId(m.id)
+    setEditDraft(m.text || '')
+  }
+
+  const cancelEdit = () => {
+    setReactionPickMsgId(null)
+    setEditingId(null)
+    setEditDraft('')
+  }
+
+  const saveEdit = async () => {
+    if (!editingId) return
+    const msg = messages.find(x => x.id === editingId)
+    if (!msg || msg.uid !== userId || messageIsTombstone(msg) || msg.editedOnce) {
+      cancelEdit()
+      return
+    }
+    const nextText = editDraft.trim()
+    if (!nextText && !msg.file) {
+      setFileError('A mensagem não pode ficar vazia. Use apagar se quiser remover.')
+      return
+    }
+    setMsgActionBusy(editingId)
+    setFileError('')
+    try {
+      await update(dbRef(db, `messages/${editingId}`), {
+        text: nextText,
+        editedOnce: true,
+        editedAt: Date.now(),
+      })
+      cancelEdit()
+    } catch (e) {
+      console.error(e)
+      setFileError('Não foi possível salvar a edição.')
+    }
+    setMsgActionBusy(null)
+  }
+
+  const softDeleteMessage = msgId => {
+    const msg = messages.find(x => x.id === msgId)
+    if (!msg || msg.uid !== userId || messageIsTombstone(msg)) return
+    setConfirmDialog({
+      title: 'Apagar mensagem',
+      body: 'Apagar esta mensagem para todos? O conteúdo some e fica indicado que foi apagada.',
+      variant: 'danger',
+      confirmLabel: 'Apagar',
+      async onConfirm() {
+        if (editingId === msgId) cancelEdit()
+        setMsgActionBusy(msgId)
+        setFileError('')
+        try {
+          await update(dbRef(db, `messages/${msgId}`), {
+            deleted: true,
+            status: 'deleted',
+            deletedAt: Date.now(),
+            text: MSG_APAGADA_FRASE,
+            file: null,
+          })
+        } catch (e) {
+          console.error(e)
+          setFileError('Não foi possível apagar a mensagem.')
+        }
+        setMsgActionBusy(null)
+      },
+    })
+  }
+
+  const setMessageReaction = async (msgId, emoji) => {
+    if (!REACTION_ALLOWED.has(emoji)) return
+    const msg = messages.find(x => x.id === msgId)
+    const cur = msg?.reactions?.[userId]
+    const rPath = dbRef(db, `messages/${msgId}/reactions/${userId}`)
+    setFileError('')
+    try {
+      if (cur === emoji) await remove(rPath)
+      else await set(rPath, emoji)
+      setReactionPickMsgId(null)
+    } catch (e) {
+      console.error(e)
+      setFileError('Não foi possível salvar a reação.')
+    }
+  }
+
+  useEffect(() => {
+    if (!confirmDialog) return
+    const onKey = e => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setConfirmDialog(null)
+      }
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [confirmDialog])
+
+  const dismissConfirm = () => setConfirmDialog(null)
+
+  const commitConfirm = async () => {
+    const d = confirmDialog
+    if (!d) return
+    setConfirmDialog(null)
+    try {
+      await d.onConfirm()
+    } catch (e) {
+      console.error(e)
+    }
+  }
+
+  const confirmModal = confirmDialog ? (
+    <div
+      style={s.confirmOverlay}
+      onClick={e => e.target === e.currentTarget && dismissConfirm()}
+    >
+      <div
+        style={s.confirmPanel}
+        onClick={e => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="confirm-dialog-title"
+      >
+        <div id="confirm-dialog-title" style={s.confirmTitle}>{confirmDialog.title}</div>
+        <p style={s.confirmBody}>{confirmDialog.body}</p>
+        <div style={s.confirmActions}>
+          <button type="button" style={s.confirmBtnSecondary} onClick={dismissConfirm}>
+            Cancelar
+          </button>
+          <button
+            type="button"
+            style={confirmDialog.variant === 'danger' ? s.confirmBtnDanger : s.confirmBtnPrimary}
+            onClick={() => void commitConfirm()}
+          >
+            {confirmDialog.confirmLabel || 'Confirmar'}
+          </button>
+        </div>
+      </div>
+    </div>
+  ) : null
+
   // ── Login ──
   if (!joined) return (
     <>
+    {confirmModal}
     <style>{css}</style>
     <div style={s.page}>
       <div style={s.bgBlur} />
@@ -446,6 +656,7 @@ export default function App() {
   // ── Chat ──
   return (
     <>
+    {confirmModal}
     <style>{css}</style>
     <div style={s.page}>
       <div style={s.bgBlur} />
@@ -509,29 +720,203 @@ export default function App() {
               <div style={s.empty}>Nenhuma mensagem ainda. Diga olá! 👋</div>
             )}
             {messages.map((m, i) => {
+              if (messageIsTombstone(m)) {
+                return (
+                  <div key={m.id} style={s.rowSystem}>
+                    <div style={s.systemTombstone} role="status" aria-live="polite">
+                      <span style={s.systemTombstoneLabel}>Sistema</span>
+                      <span style={s.systemTombstoneText}>{MSG_APAGADA_FRASE}</span>
+                      <span style={s.systemTombstoneMeta}>
+                        {m.name} · {timeStr(m.deletedAt || m.ts)}
+                      </span>
+                    </div>
+                  </div>
+                )
+              }
+
               const mine     = m.uid === userId
               const showName = !mine && (i === 0 || messages[i - 1]?.uid !== m.uid)
               const sent     = mine && sentIds.has(m.id)
+              const isEditing = editingId === m.id
+              const busy     = msgActionBusy === m.id
+              const canEditMine = mine && !m.editedOnce
+              const rCounts = reactionCounts(m.reactions)
+
               return (
-                <div key={m.id} style={{ ...s.row, justifyContent: mine ? 'flex-end' : 'flex-start' }}>
-                  <div className="bubble-wrap">
+                <div
+                  key={m.id}
+                  style={{
+                    ...s.row,
+                    justifyContent: mine ? 'flex-end' : 'flex-start',
+                    ...(reactionPickMsgId === m.id
+                      ? { position: 'relative', zIndex: 40, marginBottom: 52 }
+                      : {}),
+                  }}
+                >
+                  <div style={s.msgRowWithReaction}>
+                    {mine && !isEditing && (
+                      <div
+                        ref={reactionPickMsgId === m.id ? reactionWrapRef : undefined}
+                        style={{ ...s.reactionTriggerWrap, alignItems: mine ? 'flex-end' : 'flex-start' }}
+                      >
+                        <button
+                          type="button"
+                          className="reaction-add-btn"
+                          style={s.reactionOutlineBtn}
+                          aria-expanded={reactionPickMsgId === m.id}
+                          aria-haspopup="menu"
+                          aria-label="Reagir à mensagem"
+                          onClick={() => {
+                            setShowEmojiPicker(false)
+                            setReactionPickMsgId(prev => (prev === m.id ? null : m.id))
+                          }}
+                        >
+                          <span style={s.reactionOutlineGlyph}>+</span>
+                        </button>
+                        {reactionPickMsgId === m.id && (
+                          <div style={s.reactionPopover} role="menu">
+                            {REACTION_CHOICES.map((emo, idx) => {
+                              const n = rCounts[emo] || 0
+                              return (
+                                <button
+                                  key={emo}
+                                  type="button"
+                                  className="reaction-pop-item"
+                                  role="menuitem"
+                                  style={{
+                                    ...s.reactionPopBtn,
+                                    borderRight: idx < REACTION_CHOICES.length - 1 ? '1px solid rgba(255,255,255,0.1)' : 'none',
+                                  }}
+                                  onClick={() => void setMessageReaction(m.id, emo)}
+                                >
+                                  <span style={s.reactionPopEmoji}>{emo}</span>
+                                  {n > 0 && <span style={s.reactionPopCount}>{n}</span>}
+                                </button>
+                              )
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    <div className="bubble-wrap" style={{ flexShrink: 0 }}>
                     {showName && (
                       <div style={{ ...s.senderName, color: userColor(m.name || '') }}>
                         {m.name}
                       </div>
                     )}
                     <div style={mine ? s.bubbleMine : s.bubbleOther}>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        {m.file && <FilePreview file={m.file} mine={mine} />}
-                        {m.text && <div style={s.msgText}>{m.text}</div>}
+                      <div style={s.bubbleBody}>
+                        {isEditing ? (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                            {m.file && <FilePreview file={m.file} mine={mine} />}
+                            <textarea
+                              style={{ ...s.editMsgTextarea, minHeight: 72 }}
+                              value={editDraft}
+                              onChange={e => setEditDraft(e.target.value)}
+                              onKeyDown={e => {
+                                if (e.key === 'Enter' && !e.shiftKey) {
+                                  e.preventDefault()
+                                  saveEdit()
+                                }
+                              }}
+                              autoFocus
+                              rows={3}
+                            />
+                            <div style={s.editActions}>
+                              <button type="button" style={s.editSaveBtn} onClick={saveEdit} disabled={busy}>
+                                {busy ? '…' : 'Salvar'}
+                              </button>
+                              <button type="button" style={s.editCancelBtn} onClick={cancelEdit} disabled={busy}>
+                                Cancelar
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <>
+                            {m.file && <FilePreview file={m.file} mine={mine} />}
+                            {m.text && <div style={s.msgText}>{m.text}</div>}
+                            {m.editedOnce && (
+                              <div style={s.msgEditedHint}>editada</div>
+                            )}
+                          </>
+                        )}
                       </div>
-                      <div style={s.metaCol}>
+                      <div style={s.bubbleMetaRow}>
                         <span style={s.msgTime}>{timeStr(m.ts)}</span>
                         {mine && (
                           <span className={sent ? 'check-on' : 'check-off'} style={s.check}>✓</span>
                         )}
                       </div>
                     </div>
+                    {mine && !isEditing && (
+                      <div style={s.msgActions}>
+                        {canEditMine && (
+                          <button
+                            type="button"
+                            style={s.msgActionBtn}
+                            disabled={busy}
+                            onClick={() => startEdit(m)}
+                            title="Você pode editar só uma vez"
+                          >
+                            Editar
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          style={{ ...s.msgActionBtn, color: 'rgba(248,113,113,0.85)' }}
+                          disabled={busy}
+                          onClick={() => softDeleteMessage(m.id)}
+                          title="Apagar para todos"
+                        >
+                          {busy ? '…' : 'Apagar'}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                    {!mine && !isEditing && (
+                      <div
+                        ref={reactionPickMsgId === m.id ? reactionWrapRef : undefined}
+                        style={{ ...s.reactionTriggerWrap, alignItems: mine ? 'flex-end' : 'flex-start' }}
+                      >
+                        <button
+                          type="button"
+                          className="reaction-add-btn"
+                          style={s.reactionOutlineBtn}
+                          aria-expanded={reactionPickMsgId === m.id}
+                          aria-haspopup="menu"
+                          aria-label="Reagir à mensagem"
+                          onClick={() => {
+                            setShowEmojiPicker(false)
+                            setReactionPickMsgId(prev => (prev === m.id ? null : m.id))
+                          }}
+                        >
+                          <span style={s.reactionOutlineGlyph}>+</span>
+                        </button>
+                        {reactionPickMsgId === m.id && (
+                          <div style={s.reactionPopover} role="menu">
+                            {REACTION_CHOICES.map((emo, idx) => {
+                              const n = rCounts[emo] || 0
+                              return (
+                                <button
+                                  key={emo}
+                                  type="button"
+                                  className="reaction-pop-item"
+                                  role="menuitem"
+                                  style={{
+                                    ...s.reactionPopBtn,
+                                    borderRight: idx < REACTION_CHOICES.length - 1 ? '1px solid rgba(255,255,255,0.1)' : 'none',
+                                  }}
+                                  onClick={() => void setMessageReaction(m.id, emo)}
+                                >
+                                  <span style={s.reactionPopEmoji}>{emo}</span>
+                                  {n > 0 && <span style={s.reactionPopCount}>{n}</span>}
+                                </button>
+                              )
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
               )
@@ -568,7 +953,7 @@ export default function App() {
               <button
                 type="button"
                 style={{ ...s.attachBtn, fontSize: 20 }}
-                onClick={() => setShowEmojiPicker(v => !v)}
+                onClick={() => { setReactionPickMsgId(null); setShowEmojiPicker(v => !v) }}
                 title="Emoticons"
                 aria-expanded={showEmojiPicker}
                 aria-haspopup="true"
@@ -632,7 +1017,7 @@ const css = `
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: rgba(212,175,55,0.2); border-radius: 2px; }
   ::-webkit-scrollbar-thumb:hover { background: rgba(212,175,55,0.4); }
-  .bubble-wrap { max-width: min(78vw, 520px); }
+  .bubble-wrap { width: fit-content; max-width: min(78vw, 520px); min-width: min(100%, 120px); }
   .check-on  { opacity: 1; animation: popIn .35s cubic-bezier(.34,1.56,.64,1) forwards; }
   .check-off { opacity: 0; }
   @keyframes popIn {
@@ -641,13 +1026,25 @@ const css = `
     100% { transform: scale(1); opacity: 1; }
   }
   @media (min-width: 700px) {
-    .bubble-wrap { max-width: min(65%, 480px) !important; }
+    .bubble-wrap { max-width: min(65%, 480px) !important; min-width: min(100%, 120px) !important; }
   }
   textarea { field-sizing: content; min-height: 40px; max-height: 140px; overflow-y: auto; }
   input::placeholder { color: rgba(212,175,55,0.35); }
   textarea::placeholder { color: rgba(255,255,255,0.25); }
   input:focus { border-color: rgba(212,175,55,0.6) !important; box-shadow: 0 0 0 3px rgba(212,175,55,0.08); }
   textarea:focus { border-color: rgba(212,175,55,0.5) !important; }
+  button, [role="button"] {
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+  }
+  .reaction-add-btn:hover {
+    border-color: rgba(255,255,255,0.32) !important;
+    color: rgba(255,255,255,0.55) !important;
+    background: rgba(255,255,255,0.04) !important;
+  }
+  .reaction-pop-item:hover {
+    background: rgba(255,255,255,0.06) !important;
+  }
   .emoji-panel-btn:hover {
     background: rgba(212,175,55,0.12) !important;
     border-color: rgba(212,175,55,0.2) !important;
@@ -716,22 +1113,117 @@ const s = {
   msgArea: { flex: 1, overflowY: 'auto', padding: '16px 14px 8px', display: 'flex', flexDirection: 'column', gap: 3 },
   empty: { textAlign: 'center', color: 'rgba(212,175,55,0.2)', marginTop: 80, fontSize: 14 },
   row: { display: 'flex', marginBottom: 2 },
-  senderName: { fontSize: 11, fontWeight: 700, paddingLeft: 12, marginBottom: 3, letterSpacing: '0.02em' },
+  rowSystem: {
+    display: 'flex', justifyContent: 'center', width: '100%', marginBottom: 12, marginTop: 4, padding: '0 12px',
+  },
+  systemTombstone: {
+    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6,
+    maxWidth: 400, width: '100%', padding: '11px 18px 12px',
+    background: 'linear-gradient(180deg, rgba(40,40,48,0.95), rgba(22,22,28,0.98))',
+    border: '1px solid rgba(255,255,255,0.08)',
+    borderLeft: '3px solid rgba(148,163,184,0.55)',
+    borderRadius: 10,
+    boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.04), 0 4px 20px rgba(0,0,0,0.35)',
+  },
+  systemTombstoneLabel: {
+    fontSize: 9, fontWeight: 800, letterSpacing: '0.22em', textTransform: 'uppercase',
+    color: 'rgba(148,163,184,0.85)', fontFamily: 'inherit',
+  },
+  systemTombstoneText: {
+    fontSize: 13, lineHeight: 1.45, color: 'rgba(226,232,240,0.88)', textAlign: 'center',
+    fontWeight: 500, fontStyle: 'normal', letterSpacing: '0.01em',
+  },
+  systemTombstoneMeta: {
+    fontSize: 10, color: 'rgba(148,163,184,0.55)', letterSpacing: '0.03em',
+    textTransform: 'uppercase',
+  },
+  senderName: {
+    fontSize: 14, fontWeight: 700, paddingLeft: 12, marginBottom: 3,
+    letterSpacing: '0.06em', textTransform: 'uppercase',
+  },
 
   // Bubbles
   bubbleMine: {
     background: `linear-gradient(135deg, #2a1f00, #3d2d00)`,
     border: `1px solid rgba(212,175,55,0.35)`,
     borderRadius: '18px 18px 4px 18px', padding: '9px 12px',
-    display: 'flex', alignItems: 'flex-end', gap: 8,
+    display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: 6,
+    boxSizing: 'border-box',
+    width: 'fit-content', maxWidth: '100%', minWidth: 'min(100%, 120px)',
   },
   bubbleOther: {
     background: '#0d0d0d', border: `1px solid rgba(255,255,255,0.07)`,
     borderRadius: '18px 18px 18px 4px', padding: '9px 12px',
-    display: 'flex', alignItems: 'flex-end', gap: 8,
+    display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: 6,
+    boxSizing: 'border-box',
+    width: 'fit-content', maxWidth: '100%', minWidth: 'min(100%, 120px)',
   },
-  msgText: { fontSize: 15, lineHeight: 1.5, color: '#fff', wordBreak: 'break-word' },
-  metaCol: { display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2, flexShrink: 0, paddingBottom: 1 },
+  bubbleBody: { width: '100%', minWidth: 0 },
+  bubbleMetaRow: {
+    display: 'flex', flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center',
+    gap: 6, flexShrink: 0,
+  },
+  msgText: {
+    fontSize: 15, lineHeight: 1.5, color: '#fff',
+    whiteSpace: 'pre-wrap', overflowWrap: 'break-word', wordBreak: 'normal',
+  },
+  msgEditedHint: { fontSize: 10, color: 'rgba(212,175,55,0.45)', marginTop: 4, fontWeight: 500 },
+  msgRowWithReaction: {
+    display: 'inline-flex', flexDirection: 'row', alignItems: 'flex-end', gap: 8,
+    maxWidth: 'min(100%, 520px)', position: 'relative',
+  },
+  reactionTriggerWrap: {
+    position: 'relative', flexShrink: 0, display: 'flex', flexDirection: 'column',
+    alignSelf: 'flex-end', paddingBottom: 2,
+  },
+  reactionOutlineBtn: {
+    width: 30, height: 30, borderRadius: '50%',
+    border: '1px solid rgba(255,255,255,0.22)',
+    background: 'transparent', color: 'rgba(255,255,255,0.4)',
+    cursor: 'pointer', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+    padding: 0, fontFamily: 'inherit', lineHeight: 1,
+  },
+  reactionOutlineGlyph: {
+    fontSize: 18, fontWeight: 300, marginTop: -1, letterSpacing: 0,
+  },
+  reactionPopover: {
+    position: 'absolute', top: 'calc(100% + 8px)', bottom: 'auto', left: '50%', transform: 'translateX(-50%)',
+    zIndex: 80,
+    display: 'flex', flexDirection: 'row', alignItems: 'stretch',
+    padding: 4, whiteSpace: 'nowrap',
+    background: '#101012', border: '1px solid rgba(255,255,255,0.12)',
+    borderRadius: 12, boxShadow: '0 12px 36px rgba(0,0,0,0.65)',
+  },
+  reactionPopBtn: {
+    display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 2,
+    padding: '8px 12px', margin: 0, flex: '0 0 auto',
+    background: 'transparent', border: 'none', borderRadius: 0,
+    cursor: 'pointer', fontFamily: 'inherit', color: 'rgba(255,255,255,0.88)',
+  },
+  reactionPopEmoji: { fontSize: 18, lineHeight: 1 },
+  reactionPopCount: { fontSize: 11, fontWeight: 600, color: 'rgba(255,255,255,0.38)', minWidth: 16, textAlign: 'center' },
+  msgActions: {
+    display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 6, paddingRight: 2,
+  },
+  msgActionBtn: {
+    background: 'none', border: 'none', color: 'rgba(212,175,55,0.55)', fontSize: 11,
+    fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', padding: '2px 4px', textDecoration: 'underline',
+  },
+  editMsgTextarea: {
+    width: '100%', background: 'rgba(0,0,0,0.35)', border: `1px solid ${GOLD_DIM}`, borderRadius: 10,
+    padding: '8px 10px', color: '#fff', fontSize: 14, fontFamily: 'inherit', outline: 'none', resize: 'vertical',
+    lineHeight: 1.45,
+  },
+  editActions: { display: 'flex', gap: 8, flexWrap: 'wrap' },
+  editSaveBtn: {
+    background: `linear-gradient(135deg, #C9A84C, #FFD700)`, border: 'none', borderRadius: 8,
+    padding: '6px 14px', color: '#000', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit',
+  },
+  editCancelBtn: {
+    background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.12)',
+    borderRadius: 8, padding: '6px 14px', color: 'rgba(255,255,255,0.55)', fontSize: 12, fontWeight: 600,
+    cursor: 'pointer', fontFamily: 'inherit',
+  },
   msgTime: { fontSize: 10, color: 'rgba(255,255,255,0.35)', whiteSpace: 'nowrap' },
   check: { fontSize: 13, color: GOLD, fontWeight: 700, lineHeight: 1 },
 
@@ -798,5 +1290,49 @@ const s = {
   notifBannerBtn: {
     background: 'linear-gradient(135deg, #C9A84C, #FFD700)', border: 'none', borderRadius: 6,
     padding: '4px 14px', color: '#000', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit',
+  },
+
+  // Modal de confirmação (substitui window.confirm)
+  confirmOverlay: {
+    position: 'fixed', inset: 0, zIndex: 220,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    padding: 'max(20px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) max(20px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left))',
+    background: 'rgba(0,0,0,0.78)', backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)',
+    userSelect: 'none', WebkitUserSelect: 'none',
+  },
+  confirmPanel: {
+    width: '100%', maxWidth: 400,
+    background: 'linear-gradient(165deg, #161618 0%, #0c0c0e 55%, #080809 100%)',
+    border: `1px solid rgba(212,175,55,0.28)`,
+    borderRadius: 18,
+    padding: '24px 22px 20px',
+    boxShadow: '0 28px 70px rgba(0,0,0,0.85), 0 0 0 1px rgba(212,175,55,0.06) inset, 0 0 40px rgba(212,175,55,0.04)',
+    userSelect: 'text', WebkitUserSelect: 'text',
+  },
+  confirmTitle: {
+    fontSize: 11, fontWeight: 800, color: GOLD, letterSpacing: '0.14em', textTransform: 'uppercase',
+    marginBottom: 12, lineHeight: 1.35,
+  },
+  confirmBody: {
+    margin: 0, fontSize: 15, lineHeight: 1.55, color: 'rgba(245,245,250,0.9)', marginBottom: 24, fontWeight: 450,
+  },
+  confirmActions: { display: 'flex', gap: 10, justifyContent: 'stretch', flexWrap: 'wrap' },
+  confirmBtnSecondary: {
+    flex: '1 1 120px', minHeight: 46,
+    background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.14)',
+    borderRadius: 12, padding: '0 16px', color: 'rgba(255,255,255,0.88)', fontSize: 14, fontWeight: 600,
+    cursor: 'pointer', fontFamily: 'inherit',
+  },
+  confirmBtnPrimary: {
+    flex: '1 1 120px', minHeight: 46,
+    background: `linear-gradient(135deg, #C9A84C, #FFD700)`, border: 'none',
+    borderRadius: 12, padding: '0 16px', color: '#0a0a0a', fontSize: 14, fontWeight: 800,
+    cursor: 'pointer', fontFamily: 'inherit',
+  },
+  confirmBtnDanger: {
+    flex: '1 1 120px', minHeight: 46,
+    background: 'linear-gradient(135deg, #991b1b, #dc2626)', border: 'none',
+    borderRadius: 12, padding: '0 16px', color: '#fff', fontSize: 14, fontWeight: 800,
+    cursor: 'pointer', fontFamily: 'inherit', boxShadow: '0 4px 20px rgba(220,38,38,0.25)',
   },
 }
