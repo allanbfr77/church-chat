@@ -3,10 +3,13 @@ import { db } from './firebase'
 import {
   ref as dbRef,
   push,
+  remove,
   onValue,
   query,
   limitToLast,
 } from 'firebase/database'
+
+const ADMIN_CODE = 'invb@admin'
 
 // ── Helpers ──────────────────────────────────────────────────
 function uid() { return Math.random().toString(36).slice(2) + Date.now().toString(36) }
@@ -76,8 +79,8 @@ function getStoredSession() {
   } catch {}
   return null
 }
-function saveSession(userId, name) {
-  try { localStorage.setItem('cruch_session', JSON.stringify({ userId, name })) } catch {}
+function saveSession(userId, name, isAdmin = false) {
+  try { localStorage.setItem('cruch_session', JSON.stringify({ userId, name, isAdmin })) } catch {}
 }
 function clearSession() {
   try { localStorage.removeItem('cruch_session') } catch {}
@@ -174,47 +177,66 @@ export default function App() {
   const [reading, setReading]         = useState(false)
   const [fileError, setFileError]     = useState('')
   const [sending, setSending]         = useState(false)
+  const [isAdmin, setIsAdmin]         = useState(stored?.isAdmin || false)
+  const [adminCode, setAdminCode]     = useState('')
+  const [showAdminInput, setShowAdminInput] = useState(false)
+  const [clearing, setClearing]       = useState(false)
+  const [notifPerm, setNotifPerm]     = useState(() =>
+    typeof Notification !== 'undefined' ? Notification.permission : 'unsupported'
+  )
   const bottomRef    = useRef(null)
   const textareaRef  = useRef(null)
   const fileRef      = useRef(null)
-  const knownIdsRef  = useRef(null) // null = primeira carga ainda não feita
-  const joinTimeRef  = useRef(null)
+  const knownIdsRef  = useRef(null)
+  const joinTimeRef  = useRef(Date.now())
 
   // ── Notificações ──
-  const requestNotifPermission = () => {
-    if ('Notification' in window && Notification.permission === 'default') {
-      Notification.requestPermission()
-    }
+  const requestNotifPermission = async () => {
+    if (typeof Notification === 'undefined') return
+    if (Notification.permission !== 'default') { setNotifPerm(Notification.permission); return }
+    const perm = await Notification.requestPermission()
+    setNotifPerm(perm)
   }
 
   const showNotif = (senderName, text) => {
-    if (!('Notification' in window) || Notification.permission !== 'granted') return
-    if (document.hasFocus()) return // usuário já está olhando
+    if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return
+    if (!document.hidden) return // aba visível, usuário está olhando
     const body = text
       ? (text.length > 80 ? text.slice(0, 80) + '…' : text)
       : '📎 Arquivo recebido'
-    new Notification(`✝ ${senderName}`, { body, icon: '/favicon.ico', tag: 'chat-msg' })
+    new Notification(senderName, { body, icon: '/images/logo.png', tag: 'chat-msg' })
+  }
+
+  // ── Admin ──
+  const clearChat = async () => {
+    if (!window.confirm('Limpar todo o histórico do chat? Esta ação não pode ser desfeita.')) return
+    setClearing(true)
+    try {
+      await remove(dbRef(db, 'messages'))
+      setMessages([])
+      knownIdsRef.current = new Set()
+    } catch (err) { console.error(err) }
+    setClearing(false)
   }
 
   const handleJoin = () => {
     if (!name.trim()) return
-    saveSession(userId, name.trim())
+    const admin = adminCode.trim() === ADMIN_CODE
+    saveSession(userId, name.trim(), admin)
+    setIsAdmin(admin)
     joinTimeRef.current = Date.now()
-    requestNotifPermission()
     setJoined(true)
   }
 
   const handleExit = () => {
     clearSession()
     setJoined(false)
+    setIsAdmin(false)
     setName('')
+    setAdminCode('')
+    setShowAdminInput(false)
     setShowOnline(false)
   }
-
-  // Pede permissão de notificação se já estava logado (reload)
-  useEffect(() => {
-    if (joined) requestNotifPermission()
-  }, [joined])
 
   // Listen for messages in real time
   useEffect(() => {
@@ -231,7 +253,7 @@ export default function App() {
         knownIdsRef.current = new Set(msgs.map(m => m.id))
       } else {
         // Verificar mensagens novas para notificar
-        const joinTime = joinTimeRef.current || 0
+        const joinTime = joinTimeRef.current
         msgs.forEach(m => {
           if (!knownIdsRef.current.has(m.id)) {
             knownIdsRef.current.add(m.id)
@@ -323,10 +345,24 @@ export default function App() {
             onKeyDown={e => e.key === 'Enter' && name.trim() && handleJoin()}
             autoFocus
           />
+          {showAdminInput && (
+            <input
+              style={{ ...s.nameInput, borderColor: 'rgba(212,175,55,0.5)' }}
+              placeholder="Código admin..."
+              type="password"
+              value={adminCode}
+              onChange={e => setAdminCode(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && name.trim() && handleJoin()}
+            />
+          )}
           <button
             style={{ ...s.joinBtn, opacity: name.trim() ? 1 : 0.35 }}
             disabled={!name.trim()} onClick={handleJoin}
           >Entrar</button>
+          <button
+            style={s.adminToggleBtn}
+            onClick={() => setShowAdminInput(v => !v)}
+          >{showAdminInput ? 'Cancelar acesso admin' : 'Acesso admin'}</button>
         </div>
       </div>
     </div>
@@ -344,6 +380,21 @@ export default function App() {
           <Logo size="sm" />
         </div>
         <div style={s.headerRight}>
+          {notifPerm === 'default' && (
+            <button style={s.bellBtn} onClick={requestNotifPermission} title="Ativar notificações">
+              🔕
+            </button>
+          )}
+          {isAdmin && (
+            <button
+              style={s.clearBtn}
+              onClick={clearChat}
+              disabled={clearing}
+              title="Limpar todo o chat"
+            >
+              {clearing ? '⏳' : '🗑️ Limpar chat'}
+            </button>
+          )}
           <button style={s.onlineBtn} onClick={() => setShowOnline(v => !v)}>
             <span style={s.dot} />
             <span style={s.onlineCount}>{onlineUsers.length} online</span>
@@ -481,8 +532,8 @@ const GOLD_DIM = 'rgba(212,175,55,0.25)'
 const GOLD_FAINT = 'rgba(212,175,55,0.08)'
 
 const s = {
-  page: { height: '100svh', display: 'flex', flexDirection: 'column', background: '#000', position: 'relative', fontFamily: "'Outfit', system-ui, sans-serif", color: '#e8e8ee', overflow: 'hidden' },
-  bgBlur: { position: 'absolute', inset: 0, backgroundImage: 'url(/images/image.jpg)', backgroundSize: 'cover', backgroundPosition: 'center', filter: 'blur(1px)', transform: 'scale(1.1)', opacity: 1.50, zIndex: 0, pointerEvents: 'none' },
+  page: { height: '100svh', display: 'flex', flexDirection: 'column', background: '#000', position: 'relative', isolation: 'isolate', fontFamily: "'Outfit', system-ui, sans-serif", color: '#e8e8ee', overflow: 'hidden' },
+  bgBlur: { position: 'absolute', inset: 0, backgroundImage: 'url(/images/image.jpg)', backgroundSize: 'cover', backgroundPosition: 'center', filter: 'blur(5px)', transform: 'scale(1.08)', opacity: 0.45, zIndex: -1, pointerEvents: 'none' },
 
   // Login
   loginOuter: { flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px 16px', position: 'relative', zIndex: 1 },
@@ -592,4 +643,9 @@ const s = {
     cursor: 'pointer', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
   },
   hint: { textAlign: 'center', fontSize: 10, color: 'rgba(212,175,55,0.2)', padding: '4px 0 8px', background: '#050505', flexShrink: 0 },
+
+  // Admin / Notif extras
+  adminToggleBtn: { background: 'none', border: 'none', color: 'rgba(212,175,55,0.35)', fontSize: 11, cursor: 'pointer', fontFamily: 'inherit', textDecoration: 'underline', padding: 0 },
+  bellBtn: { background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, padding: '5px 10px', fontSize: 14, cursor: 'pointer', color: '#fff' },
+  clearBtn: { background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 8, padding: '5px 12px', color: '#f87171', fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' },
 }
