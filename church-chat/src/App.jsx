@@ -238,6 +238,14 @@ export default function App() {
     setShowOnline(false)
   }
 
+  // Re-checa permissão quando o usuário volta para a aba (após mudar nas config do Chrome)
+  useEffect(() => {
+    if (typeof Notification === 'undefined') return
+    const check = () => setNotifPerm(Notification.permission)
+    document.addEventListener('visibilitychange', check)
+    return () => document.removeEventListener('visibilitychange', check)
+  }, [])
+
   // Listen for messages in real time
   useEffect(() => {
     if (!joined) return
@@ -403,13 +411,28 @@ export default function App() {
 
       {notifPerm !== 'granted' && notifPerm !== 'unsupported' && (
         <div style={s.notifBanner}>
-          {notifPerm === 'denied'
-            ? <span>🔕 Notificações bloqueadas — ative em <b>Configurações do Chrome</b> para este site</span>
-            : <span>🔔 Ative notificações para avisos de novas mensagens</span>
-          }
+          {notifPerm === 'denied' ? (
+            <span>
+              🔒 Cadeado na barra → <b>Notificações</b> → <b>Permitir</b> → recarregue a página
+            </span>
+          ) : (
+            <span>🔔 Ative notificações para avisos de novas mensagens</span>
+          )}
           {notifPerm === 'default' && (
             <button style={s.notifBannerBtn} onClick={requestNotifPermission}>Ativar</button>
           )}
+          {notifPerm === 'denied' && (
+            <button style={s.notifBannerBtn} onClick={() => window.location.reload()}>Recarregar</button>
+          )}
+        </div>
+      )}
+      {notifPerm === 'granted' && isAdmin && (
+        <div style={{ ...s.notifBanner, background: 'rgba(74,222,128,0.08)', borderBottomColor: 'rgba(74,222,128,0.2)' }}>
+          <span style={{ color: '#4ade80', fontSize: 12 }}>✅ Notificações ativas</span>
+          <button style={{ ...s.notifBannerBtn, background: '#4ade80' }}
+            onClick={() => new Notification('Teste ✓', { body: 'Notificações funcionando!', icon: '/images/logo.png' })}>
+            Testar
+          </button>
         </div>
       )}
 
