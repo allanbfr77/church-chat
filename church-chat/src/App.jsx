@@ -200,7 +200,6 @@ export default function App() {
 
   const showNotif = (senderName, text) => {
     if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return
-    if (!document.hidden) return // aba visível, usuário está olhando
     const body = text
       ? (text.length > 80 ? text.slice(0, 80) + '…' : text)
       : '📎 Arquivo recebido'
