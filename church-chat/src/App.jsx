@@ -38,18 +38,56 @@ function readAsDataURL(file) {
   })
 }
 
-// ── File Preview ─────────────────────────────────────────────
+// ── User Color ────────────────────────────────────────────────
+const USER_COLORS = [
+  '#FFD700', // gold
+  '#FF6B6B', // coral
+  '#4FC3F7', // sky blue
+  '#81C784', // mint green
+  '#CE93D8', // lavender
+  '#FFAB40', // orange
+  '#4DD0E1', // cyan
+  '#F06292', // pink
+  '#AED581', // lime
+  '#FF8A65', // deep orange
+  '#80DEEA', // light cyan
+  '#FFD54F', // amber
+]
+function userColor(name) {
+  let hash = 0
+  for (let i = 0; i < name.length; i++) {
+    hash = name.charCodeAt(i) + ((hash << 5) - hash)
+    hash |= 0
+  }
+  return USER_COLORS[Math.abs(hash) % USER_COLORS.length]
+}
+
+// ── Persistent Session ────────────────────────────────────────
+function getStoredSession() {
+  try {
+    const raw = localStorage.getItem('cruch_session')
+    if (raw) return JSON.parse(raw)
+  } catch {}
+  return null
+}
+function saveSession(userId, name) {
+  try { localStorage.setItem('cruch_session', JSON.stringify({ userId, name })) } catch {}
+}
+function clearSession() {
+  try { localStorage.removeItem('cruch_session') } catch {}
+}
+
+// ── File Preview ──────────────────────────────────────────────
 function FilePreview({ file, mine }) {
-  // file.dataUrl is a base64 data URL stored directly in Firebase
   const src = file.dataUrl || file.url
   if (file.type?.startsWith('image/')) return (
     <div style={{ marginBottom: 4 }}>
       <img
         src={src} alt={file.name}
-        style={{ maxWidth: '100%', maxHeight: 240, borderRadius: 8, display: 'block', cursor: 'pointer' }}
+        style={{ maxWidth: '100%', maxHeight: 240, borderRadius: 8, display: 'block', cursor: 'pointer', border: '1px solid rgba(212,175,55,0.25)' }}
         onClick={() => { const w = window.open(); w.document.write(`<body style="margin:0;background:#000"><img src="${src}" style="max-width:100%;max-height:100vh;display:block;margin:auto"/></body>`) }}
       />
-      <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.4)', marginTop: 3 }}>
+      <div style={{ fontSize: 10, color: 'rgba(212,175,55,0.45)', marginTop: 3 }}>
         {file.name} · {fmtSize(file.size)}
       </div>
     </div>
@@ -59,9 +97,9 @@ function FilePreview({ file, mine }) {
       href={src} download={file.name}
       style={{
         display: 'flex', alignItems: 'center', gap: 10,
-        background: mine ? 'rgba(0,0,0,0.2)' : 'rgba(255,255,255,0.06)',
+        background: mine ? 'rgba(0,0,0,0.35)' : 'rgba(212,175,55,0.06)',
         borderRadius: 10, padding: '10px 12px', marginBottom: 4,
-        textDecoration: 'none', border: '1px solid rgba(255,255,255,0.1)',
+        textDecoration: 'none', border: '1px solid rgba(212,175,55,0.2)',
       }}
     >
       <span style={{ fontSize: 24, flexShrink: 0 }}>{fileIcon(file.type)}</span>
@@ -69,7 +107,7 @@ function FilePreview({ file, mine }) {
         <div style={{ fontSize: 13, fontWeight: 600, color: '#fff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
           {file.name}
         </div>
-        <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)', marginTop: 2 }}>
+        <div style={{ fontSize: 11, color: 'rgba(212,175,55,0.5)', marginTop: 2 }}>
           {fmtSize(file.size)} · baixar
         </div>
       </div>
@@ -77,22 +115,100 @@ function FilePreview({ file, mine }) {
   )
 }
 
-// ── Main App ─────────────────────────────────────────────────
+// ── Online Users Modal ────────────────────────────────────────
+function OnlineModal({ users, onClose }) {
+  return (
+    <div style={sm.overlay} onClick={onClose}>
+      <div style={sm.panel} onClick={e => e.stopPropagation()}>
+        <div style={sm.header}>
+          <span style={sm.title}>Online agora</span>
+          <button style={sm.closeBtn} onClick={onClose}>✕</button>
+        </div>
+        <div style={sm.list}>
+          {users.length === 0 && (
+            <div style={sm.empty}>Nenhum usuário ativo recentemente</div>
+          )}
+          {users.map((u, i) => (
+            <div key={i} style={sm.userRow}>
+              <div style={{ ...sm.dot, background: userColor(u), boxShadow: `0 0 6px ${userColor(u)}` }} />
+              <span style={{ ...sm.userName, color: userColor(u) }}>{u}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+const sm = {
+  overlay: { position: 'fixed', inset: 0, zIndex: 100, display: 'flex', alignItems: 'flex-start', justifyContent: 'flex-end', padding: '62px 16px 0' },
+  panel: { background: '#0a0a0a', border: '1px solid rgba(212,175,55,0.4)', borderRadius: 14, minWidth: 200, boxShadow: '0 8px 40px rgba(0,0,0,0.8), 0 0 24px rgba(212,175,55,0.08)', overflow: 'hidden' },
+  header: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', borderBottom: '1px solid rgba(212,175,55,0.15)' },
+  title: { fontSize: 11, fontWeight: 700, color: '#D4AF37', letterSpacing: '0.08em', textTransform: 'uppercase' },
+  closeBtn: { background: 'none', border: 'none', color: 'rgba(212,175,55,0.5)', fontSize: 14, cursor: 'pointer', padding: '0 2px' },
+  list: { padding: '6px 0', maxHeight: 260, overflowY: 'auto' },
+  userRow: { display: 'flex', alignItems: 'center', gap: 10, padding: '9px 16px' },
+  dot: { width: 7, height: 7, borderRadius: '50%', flexShrink: 0 },
+  userName: { fontSize: 14, fontWeight: 600 },
+  empty: { fontSize: 13, color: 'rgba(255,255,255,0.3)', padding: '10px 16px' },
+}
+
+// ── Main App ──────────────────────────────────────────────────
 export default function App() {
-  const [userId]      = useState(uid)
-  const [name, setName]           = useState('')
-  const [joined, setJoined]       = useState(false)
-  const [messages, setMessages]   = useState([])
-  const [input, setInput]         = useState('')
-  const [online, setOnline]       = useState(1)
-  const [sentIds, setSentIds]     = useState(new Set())
+  const stored = getStoredSession()
+  const [userId]      = useState(() => stored?.userId || uid())
+  const [name, setName]               = useState(stored?.name || '')
+  const [joined, setJoined]           = useState(!!stored?.name)
+  const [messages, setMessages]       = useState([])
+  const [input, setInput]             = useState('')
+  const [onlineUsers, setOnlineUsers] = useState([])
+  const [showOnline, setShowOnline]   = useState(false)
+  const [sentIds, setSentIds]         = useState(new Set())
   const [pendingFile, setPendingFile] = useState(null)
-  const [reading, setReading]     = useState(false)
-  const [fileError, setFileError] = useState('')
-  const [sending, setSending]     = useState(false)
-  const bottomRef   = useRef(null)
-  const textareaRef = useRef(null)
-  const fileRef     = useRef(null)
+  const [reading, setReading]         = useState(false)
+  const [fileError, setFileError]     = useState('')
+  const [sending, setSending]         = useState(false)
+  const bottomRef    = useRef(null)
+  const textareaRef  = useRef(null)
+  const fileRef      = useRef(null)
+  const knownIdsRef  = useRef(null) // null = primeira carga ainda não feita
+  const joinTimeRef  = useRef(null)
+
+  // ── Notificações ──
+  const requestNotifPermission = () => {
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission()
+    }
+  }
+
+  const showNotif = (senderName, text) => {
+    if (!('Notification' in window) || Notification.permission !== 'granted') return
+    if (document.hasFocus()) return // usuário já está olhando
+    const body = text
+      ? (text.length > 80 ? text.slice(0, 80) + '…' : text)
+      : '📎 Arquivo recebido'
+    new Notification(`✝ ${senderName}`, { body, icon: '/favicon.ico', tag: 'chat-msg' })
+  }
+
+  const handleJoin = () => {
+    if (!name.trim()) return
+    saveSession(userId, name.trim())
+    joinTimeRef.current = Date.now()
+    requestNotifPermission()
+    setJoined(true)
+  }
+
+  const handleExit = () => {
+    clearSession()
+    setJoined(false)
+    setName('')
+    setShowOnline(false)
+  }
+
+  // Pede permissão de notificação se já estava logado (reload)
+  useEffect(() => {
+    if (joined) requestNotifPermission()
+  }, [joined])
 
   // Listen for messages in real time
   useEffect(() => {
@@ -100,17 +216,39 @@ export default function App() {
     const q = query(dbRef(db, 'messages'), limitToLast(100))
     const unsub = onValue(q, snap => {
       const data = snap.val()
-      if (!data) { setMessages([]); return }
+      if (!data) { setMessages([]); setOnlineUsers([]); knownIdsRef.current = new Set(); return }
       const msgs = Object.entries(data).map(([id, v]) => ({ id, ...v }))
       msgs.sort((a, b) => (a.ts || 0) - (b.ts || 0))
+
+      // Primeira carga: marcar todas as mensagens existentes como "já vistas"
+      if (knownIdsRef.current === null) {
+        knownIdsRef.current = new Set(msgs.map(m => m.id))
+      } else {
+        // Verificar mensagens novas para notificar
+        const joinTime = joinTimeRef.current || 0
+        msgs.forEach(m => {
+          if (!knownIdsRef.current.has(m.id)) {
+            knownIdsRef.current.add(m.id)
+            // Só notifica se: não é minha mensagem E chegou após o login
+            if (m.uid !== userId && (m.ts || 0) >= joinTime) {
+              showNotif(m.name || 'Alguém', m.text || '')
+            }
+          }
+        })
+      }
+
       setMessages(msgs)
+      // Build online users from recent messages (last 5 min)
       const cutoff = Date.now() - 5 * 60 * 1000
-      const users = new Set(msgs.filter(m => m.ts > cutoff).map(m => m.uid))
-      users.add(userId)
-      setOnline(users.size)
+      const userMap = new Map()
+      msgs.filter(m => m.ts > cutoff).forEach(m => {
+        if (!userMap.has(m.uid)) userMap.set(m.uid, m.name)
+      })
+      if (!userMap.has(userId)) userMap.set(userId, name)
+      setOnlineUsers(Array.from(userMap.values()))
     })
     return () => unsub()
-  }, [joined, userId])
+  }, [joined, userId, name])
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -170,18 +308,17 @@ export default function App() {
       <style>{css}</style>
       <div style={s.loginOuter}>
         <div style={s.loginCard}>
-          <div style={s.loginIcon}>💬</div>
-          <h1 style={s.loginTitle}>Chat</h1>
+          <h1 style={s.loginTitle}>Chat - INVB</h1>
           <p style={s.loginSub}>Entre com seu nome para começar</p>
           <input
             style={s.nameInput} placeholder="Seu nome..." value={name}
             onChange={e => setName(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && name.trim() && setJoined(true)}
+            onKeyDown={e => e.key === 'Enter' && name.trim() && handleJoin()}
             autoFocus
           />
           <button
             style={{ ...s.joinBtn, opacity: name.trim() ? 1 : 0.35 }}
-            disabled={!name.trim()} onClick={() => setJoined(true)}
+            disabled={!name.trim()} onClick={handleJoin}
           >Entrar</button>
         </div>
       </div>
@@ -192,16 +329,18 @@ export default function App() {
   return (
     <div style={s.page}>
       <style>{css}</style>
+      {showOnline && <OnlineModal users={onlineUsers} onClose={() => setShowOnline(false)} />}
 
       <div style={s.header}>
         <div style={s.headerLeft}>
-          <span style={s.headerIcon}>💬</span>
-          <span style={s.headerTitle}>Chat</span>
+          <span style={s.headerTitle}>Chat - INVB</span>
         </div>
         <div style={s.headerRight}>
-          <span style={s.dot} />
-          <span style={s.onlineCount}>{online} online</span>
-          <button style={s.exitBtn} onClick={() => setJoined(false)}>Sair</button>
+          <button style={s.onlineBtn} onClick={() => setShowOnline(v => !v)}>
+            <span style={s.dot} />
+            <span style={s.onlineCount}>{onlineUsers.length} online</span>
+          </button>
+          <button style={s.exitBtn} onClick={handleExit}>Sair</button>
         </div>
       </div>
 
@@ -219,7 +358,11 @@ export default function App() {
               return (
                 <div key={m.id} style={{ ...s.row, justifyContent: mine ? 'flex-end' : 'flex-start' }}>
                   <div className="bubble-wrap">
-                    {showName && <div style={s.senderName}>{m.name}</div>}
+                    {showName && (
+                      <div style={{ ...s.senderName, color: userColor(m.name || '') }}>
+                        {m.name}
+                      </div>
+                    )}
                     <div style={mine ? s.bubbleMine : s.bubbleOther}>
                       <div style={{ flex: 1, minWidth: 0 }}>
                         {m.file && <FilePreview file={m.file} mine={mine} />}
@@ -239,14 +382,12 @@ export default function App() {
             <div ref={bottomRef} />
           </div>
 
-          {/* Reading indicator */}
           {reading && (
             <div style={s.pendingBar}>
-              <span style={{ fontSize: 14, color: 'rgba(255,255,255,0.6)' }}>⏳ Carregando arquivo...</span>
+              <span style={{ fontSize: 14, color: 'rgba(212,175,55,0.7)' }}>⏳ Carregando arquivo...</span>
             </div>
           )}
 
-          {/* Pending file */}
           {pendingFile && !reading && (
             <div style={s.pendingBar}>
               <span style={{ fontSize: 20 }}>{fileIcon(pendingFile.type)}</span>
@@ -300,13 +441,14 @@ export default function App() {
 
 // ── CSS ───────────────────────────────────────────────────────
 const css = `
-  @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&display=swap');
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   html, body, #root { height: 100%; }
   body { overflow: hidden; }
   ::-webkit-scrollbar { width: 4px; }
   ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 2px; }
+  ::-webkit-scrollbar-thumb { background: rgba(212,175,55,0.2); border-radius: 2px; }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(212,175,55,0.4); }
   .bubble-wrap { max-width: min(78vw, 520px); }
   .check-on  { opacity: 1; animation: popIn .35s cubic-bezier(.34,1.56,.64,1) forwards; }
   .check-off { opacity: 0; }
@@ -319,47 +461,126 @@ const css = `
     .bubble-wrap { max-width: min(65%, 480px) !important; }
   }
   textarea { field-sizing: content; min-height: 40px; max-height: 140px; overflow-y: auto; }
+  input::placeholder { color: rgba(212,175,55,0.35); }
+  textarea::placeholder { color: rgba(255,255,255,0.25); }
+  input:focus { border-color: rgba(212,175,55,0.6) !important; box-shadow: 0 0 0 3px rgba(212,175,55,0.08); }
+  textarea:focus { border-color: rgba(212,175,55,0.5) !important; }
 `
 
 // ── Styles ────────────────────────────────────────────────────
+const GOLD = '#D4AF37'
+const GOLD_DIM = 'rgba(212,175,55,0.25)'
+const GOLD_FAINT = 'rgba(212,175,55,0.08)'
+
 const s = {
-  page: { height: '100svh', display: 'flex', flexDirection: 'column', background: '#0f0f13', fontFamily: "'Outfit', system-ui, sans-serif", color: '#e8e8ee', overflow: 'hidden' },
+  page: { height: '100svh', display: 'flex', flexDirection: 'column', background: '#000000', fontFamily: "'Outfit', system-ui, sans-serif", color: '#e8e8ee', overflow: 'hidden' },
+
+  // Login
   loginOuter: { flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px 16px' },
-  loginCard: { width: '100%', maxWidth: 400, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 20, padding: '40px 32px' },
-  loginIcon: { fontSize: 52, lineHeight: 1 },
-  loginTitle: { fontSize: 26, fontWeight: 600, color: '#fff', letterSpacing: '-0.02em' },
-  loginSub: { fontSize: 14, color: 'rgba(255,255,255,0.4)', textAlign: 'center' },
-  nameInput: { width: '100%', background: 'rgba(255,255,255,0.06)', border: '1.5px solid rgba(255,255,255,0.12)', borderRadius: 12, padding: '13px 16px', color: '#fff', fontSize: 16, outline: 'none', fontFamily: 'inherit' },
-  joinBtn: { width: '100%', background: '#4f8ef7', border: 'none', borderRadius: 12, padding: '14px', color: '#fff', fontSize: 16, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' },
-  header: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '13px 18px', borderBottom: '1px solid rgba(255,255,255,0.07)', background: 'rgba(15,15,19,0.95)', backdropFilter: 'blur(8px)', flexShrink: 0, zIndex: 10 },
-  headerLeft: { display: 'flex', alignItems: 'center', gap: 8 },
-  headerIcon: { fontSize: 20 },
-  headerTitle: { fontSize: 16, fontWeight: 600, color: '#fff' },
-  headerRight: { display: 'flex', alignItems: 'center', gap: 8 },
-  dot: { width: 8, height: 8, borderRadius: '50%', background: '#4ade80', boxShadow: '0 0 6px #4ade80' },
-  onlineCount: { fontSize: 12, color: 'rgba(255,255,255,0.4)' },
-  exitBtn: { background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, padding: '5px 13px', color: 'rgba(255,255,255,0.5)', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit' },
+  loginCard: {
+    width: '100%', maxWidth: 400, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 18,
+    background: '#080808', border: `1px solid ${GOLD_DIM}`, borderRadius: 20, padding: '44px 36px',
+  },
+  loginLogo: { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 },
+  loginTitle: { fontSize: 26, fontWeight: 700, color: GOLD, letterSpacing: '0.02em' },
+  loginSub: { fontSize: 14, color: 'rgba(255,255,255,0.35)', textAlign: 'center' },
+  nameInput: {
+    width: '100%', background: '#0d0d0d', border: `1.5px solid ${GOLD_DIM}`, borderRadius: 12,
+    padding: '13px 16px', color: '#fff', fontSize: 16, outline: 'none', fontFamily: 'inherit',
+    transition: 'border-color .2s',
+  },
+  joinBtn: {
+    width: '100%', background: `linear-gradient(135deg, #C9A84C, #FFD700, #A07830)`,
+    border: 'none', borderRadius: 12, padding: '14px', color: '#000', fontSize: 16,
+    fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit', letterSpacing: '0.02em',
+  },
+
+  // Header
+  header: {
+    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+    padding: '12px 18px', borderBottom: `1px solid ${GOLD_DIM}`,
+    background: '#050505', backdropFilter: 'blur(8px)', flexShrink: 0, zIndex: 10,
+  },
+  headerLeft: { display: 'flex', alignItems: 'center', gap: 10 },
+  headerTitle: { fontSize: 16, fontWeight: 700, color: GOLD, letterSpacing: '0.03em' },
+  headerRight: { display: 'flex', alignItems: 'center', gap: 10 },
+  dot: { width: 8, height: 8, borderRadius: '50%', background: '#4ade80', boxShadow: '0 0 7px #4ade80', flexShrink: 0 },
+  onlineBtn: {
+    display: 'flex', alignItems: 'center', gap: 7,
+    background: GOLD_FAINT, border: `1px solid ${GOLD_DIM}`,
+    borderRadius: 20, padding: '5px 12px', cursor: 'pointer', fontFamily: 'inherit',
+    transition: 'background .2s',
+  },
+  onlineCount: { fontSize: 12, color: GOLD, fontWeight: 600 },
+  exitBtn: {
+    background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)',
+    borderRadius: 8, padding: '5px 13px', color: 'rgba(255,255,255,0.4)', fontSize: 12,
+    cursor: 'pointer', fontFamily: 'inherit',
+  },
+
+  // Layout
   desktopWrapper: { flex: 1, display: 'flex', overflow: 'hidden', justifyContent: 'center' },
-  chatPanel: { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', maxWidth: 720, borderLeft: '1px solid rgba(255,255,255,0.05)', borderRight: '1px solid rgba(255,255,255,0.05)' },
+  chatPanel: {
+    flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', maxWidth: 720,
+    borderLeft: `1px solid ${GOLD_DIM}`, borderRight: `1px solid ${GOLD_DIM}`,
+  },
   msgArea: { flex: 1, overflowY: 'auto', padding: '16px 14px 8px', display: 'flex', flexDirection: 'column', gap: 3 },
-  empty: { textAlign: 'center', color: 'rgba(255,255,255,0.2)', marginTop: 80, fontSize: 14 },
+  empty: { textAlign: 'center', color: 'rgba(212,175,55,0.2)', marginTop: 80, fontSize: 14 },
   row: { display: 'flex', marginBottom: 2 },
-  senderName: { fontSize: 11, fontWeight: 600, color: 'rgba(255,255,255,0.35)', paddingLeft: 12, marginBottom: 3 },
-  bubbleMine: { background: '#4f8ef7', borderRadius: '18px 18px 4px 18px', padding: '9px 12px', display: 'flex', alignItems: 'flex-end', gap: 8 },
-  bubbleOther: { background: 'rgba(255,255,255,0.09)', borderRadius: '18px 18px 18px 4px', padding: '9px 12px', display: 'flex', alignItems: 'flex-end', gap: 8 },
+  senderName: { fontSize: 11, fontWeight: 700, paddingLeft: 12, marginBottom: 3, letterSpacing: '0.02em' },
+
+  // Bubbles
+  bubbleMine: {
+    background: `linear-gradient(135deg, #2a1f00, #3d2d00)`,
+    border: `1px solid rgba(212,175,55,0.35)`,
+    borderRadius: '18px 18px 4px 18px', padding: '9px 12px',
+    display: 'flex', alignItems: 'flex-end', gap: 8,
+  },
+  bubbleOther: {
+    background: '#0d0d0d', border: `1px solid rgba(255,255,255,0.07)`,
+    borderRadius: '18px 18px 18px 4px', padding: '9px 12px',
+    display: 'flex', alignItems: 'flex-end', gap: 8,
+  },
   msgText: { fontSize: 15, lineHeight: 1.5, color: '#fff', wordBreak: 'break-word' },
   metaCol: { display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2, flexShrink: 0, paddingBottom: 1 },
-  msgTime: { fontSize: 10, color: 'rgba(255,255,255,0.4)', whiteSpace: 'nowrap' },
-  check: { fontSize: 13, color: '#4ade80', fontWeight: 700, lineHeight: 1 },
-  pendingBar: { display: 'flex', alignItems: 'center', gap: 10, margin: '0 12px 6px', padding: '10px 14px', background: 'rgba(79,142,247,0.15)', border: '1px solid rgba(79,142,247,0.3)', borderRadius: 12 },
+  msgTime: { fontSize: 10, color: 'rgba(255,255,255,0.35)', whiteSpace: 'nowrap' },
+  check: { fontSize: 13, color: GOLD, fontWeight: 700, lineHeight: 1 },
+
+  // Pending / errors
+  pendingBar: {
+    display: 'flex', alignItems: 'center', gap: 10, margin: '0 12px 6px', padding: '10px 14px',
+    background: `rgba(212,175,55,0.07)`, border: `1px solid ${GOLD_DIM}`, borderRadius: 12,
+  },
   pendingName: { fontSize: 13, fontWeight: 600, color: '#fff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
-  pendingSize: { fontSize: 11, color: 'rgba(255,255,255,0.4)', marginTop: 2 },
-  removePending: { background: 'none', border: 'none', color: 'rgba(255,255,255,0.4)', fontSize: 16, cursor: 'pointer', padding: '0 2px' },
-  fileError: { margin: '0 12px 6px', padding: '8px 14px', background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 10, fontSize: 13, color: '#f87171', display: 'flex', alignItems: 'center', justifyContent: 'space-between' },
+  pendingSize: { fontSize: 11, color: 'rgba(212,175,55,0.45)', marginTop: 2 },
+  removePending: { background: 'none', border: 'none', color: 'rgba(212,175,55,0.5)', fontSize: 16, cursor: 'pointer', padding: '0 2px' },
+  fileError: {
+    margin: '0 12px 6px', padding: '8px 14px',
+    background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.3)',
+    borderRadius: 10, fontSize: 13, color: '#f87171', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+  },
   clearErr: { background: 'none', border: 'none', color: '#f87171', cursor: 'pointer', fontSize: 14 },
-  inputBar: { display: 'flex', gap: 8, padding: '10px 12px', borderTop: '1px solid rgba(255,255,255,0.07)', background: 'rgba(0,0,0,0.25)', flexShrink: 0, alignItems: 'flex-end' },
-  attachBtn: { width: 42, height: 42, borderRadius: 12, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)', fontSize: 18, cursor: 'pointer', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' },
-  textarea: { flex: 1, background: 'rgba(255,255,255,0.07)', border: '1.5px solid rgba(255,255,255,0.1)', borderRadius: 12, padding: '10px 14px', color: '#fff', fontSize: 15, fontFamily: 'inherit', outline: 'none', resize: 'none', lineHeight: 1.5 },
-  sendBtn: { width: 42, height: 42, borderRadius: 12, background: '#4f8ef7', border: 'none', color: '#fff', fontSize: 17, cursor: 'pointer', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' },
-  hint: { textAlign: 'center', fontSize: 10, color: 'rgba(255,255,255,0.18)', padding: '4px 0 8px', background: 'rgba(0,0,0,0.25)', flexShrink: 0 },
+
+  // Input bar
+  inputBar: {
+    display: 'flex', gap: 8, padding: '10px 12px',
+    borderTop: `1px solid ${GOLD_DIM}`, background: '#050505',
+    flexShrink: 0, alignItems: 'flex-end',
+  },
+  attachBtn: {
+    width: 42, height: 42, borderRadius: 12, background: GOLD_FAINT, border: `1px solid ${GOLD_DIM}`,
+    fontSize: 18, cursor: 'pointer', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+  },
+  textarea: {
+    flex: 1, background: '#0d0d0d', border: `1.5px solid rgba(255,255,255,0.08)`,
+    borderRadius: 12, padding: '10px 14px', color: '#fff', fontSize: 15,
+    fontFamily: 'inherit', outline: 'none', resize: 'none', lineHeight: 1.5, transition: 'border-color .2s',
+  },
+  sendBtn: {
+    width: 42, height: 42, borderRadius: 12,
+    background: `linear-gradient(135deg, #C9A84C, #FFD700)`,
+    border: 'none', color: '#000', fontSize: 17, fontWeight: 700,
+    cursor: 'pointer', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+  },
+  hint: { textAlign: 'center', fontSize: 10, color: 'rgba(212,175,55,0.2)', padding: '4px 0 8px', background: '#050505', flexShrink: 0 },
 }
