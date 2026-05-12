@@ -189,6 +189,7 @@ export default function App() {
   const fileRef      = useRef(null)
   const knownIdsRef  = useRef(null)
   const joinTimeRef  = useRef(Date.now())
+  const userIdRef    = useRef(userId)
 
   // ── Notificações ──
   const requestNotifPermission = async () => {
@@ -198,12 +199,16 @@ export default function App() {
     setNotifPerm(perm)
   }
 
-  const showNotif = (senderName, text) => {
-    if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return
+  // Função global de notificação — não depende de closure
+  function fireNotif(senderName, text) {
+    if (typeof Notification === 'undefined') return
+    if (Notification.permission !== 'granted') return
     const body = text
       ? (text.length > 80 ? text.slice(0, 80) + '…' : text)
       : '📎 Arquivo recebido'
-    new Notification(senderName, { body, icon: '/images/notif-icon.png', tag: 'chat-msg' })
+    try {
+      new Notification(senderName, { body, icon: '/images/notif-icon.png', tag: 'chat-msg' })
+    } catch (e) { console.warn('Notif error:', e) }
   }
 
   // ── Admin ──
@@ -263,9 +268,8 @@ export default function App() {
         msgs.forEach(m => {
           if (!knownIdsRef.current.has(m.id)) {
             knownIdsRef.current.add(m.id)
-            // Só notifica se não é minha própria mensagem
-            if (m.uid !== userId) {
-              showNotif(m.name || 'Alguém', m.text || '')
+            if (m.uid !== userIdRef.current) {
+              fireNotif(m.name || 'Alguém', m.text || '')
             }
           }
         })
@@ -428,18 +432,7 @@ export default function App() {
         <div style={{ ...s.notifBanner, background: 'rgba(74,222,128,0.08)', borderBottomColor: 'rgba(74,222,128,0.2)' }}>
           <span style={{ color: '#4ade80', fontSize: 12 }}>✅ Notificações ativas</span>
           <button style={{ ...s.notifBannerBtn, background: '#4ade80' }}
-            onClick={() => {
-              try {
-                const n = new Notification('Chat - Nova Vida', {
-                  body: '🔔 Notificações estão funcionando!',
-                  icon: '/images/notif-icon.png',
-                  requireInteraction: false,
-                })
-                n.onerror = (e) => alert('Erro na notificação: ' + e)
-              } catch(e) {
-                alert('Erro: ' + e.message + '\n\nVerifique:\n• Notificações do Chrome habilitadas no Windows\n  (Configurações → Sistema → Notificações → Google Chrome → Ativar)')
-              }
-            }}>
+            onClick={() => fireNotif('Chat - Nova Vida', '🔔 Notificações estão funcionando!')}>
             Testar
           </button>
         </div>
