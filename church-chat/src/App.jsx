@@ -4,8 +4,10 @@ import {
   ref as dbRef,
   push,
   remove,
+  set,
   update,
   onValue,
+  onDisconnect,
   query,
   limitToLast,
 } from 'firebase/database'
@@ -57,6 +59,26 @@ function readAsDataURL(file) {
 /** Remove quebras de linha do texto do chat (exibição e persistência). */
 function collapseChatLineBreaks(str) {
   return String(str ?? '').replace(/\r\n|\r|\n/g, ' ')
+}
+
+/** PWA aberta como app (fora do navegador em aba) */
+function isStandalonePWA() {
+  if (typeof window === 'undefined') return false
+  if (window.matchMedia?.('(display-mode: standalone)').matches) return true
+  if (window.matchMedia?.('(display-mode: fullscreen)').matches) return true
+  if (window.navigator.standalone === true) return true
+  return false
+}
+
+function isIOSDevice() {
+  if (typeof navigator === 'undefined') return false
+  if (/iPad|iPhone|iPod/.test(navigator.userAgent)) return true
+  return navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1
+}
+
+function isAndroidDevice() {
+  if (typeof navigator === 'undefined') return false
+  return /Android/i.test(navigator.userAgent)
 }
 
 /** Mensagem apagada pelo remetente (status, boolean, texto legado ou metadados) */
@@ -131,20 +153,160 @@ function clearSession() {
 }
 
 // ── File Preview ──────────────────────────────────────────────
+function fileLooksLikeImage(file, src) {
+  if (file.type && String(file.type).startsWith('image/')) return true
+  if (typeof src === 'string' && src.startsWith('data:image/')) return true
+  return /\.(jpe?g|png|gif|webp|avif|bmp|heic)$/i.test(String(file.name || ''))
+}
+
 function FilePreview({ file, mine }) {
   const src = file.dataUrl || file.url
-  if (file.type?.startsWith('image/')) return (
-    <div style={{ marginBottom: 4 }}>
-      <img
-        src={src} alt={file.name}
-        style={{ maxWidth: '100%', maxHeight: 240, borderRadius: 8, display: 'block', cursor: 'pointer', border: '1px solid rgba(212,175,55,0.25)' }}
-        onClick={() => { const w = window.open(); w.document.write(`<body style="margin:0;background:#000"><img src="${src}" style="max-width:100%;max-height:100vh;display:block;margin:auto"/></body>`) }}
-      />
-      <div style={{ fontSize: 10, color: 'rgba(212,175,55,0.45)', marginTop: 3 }}>
-        {file.name} · {fmtSize(file.size)}
-      </div>
-    </div>
-  )
+  const [fullOpen, setFullOpen] = useState(false)
+
+  useEffect(() => {
+    if (!fullOpen) return
+    const onKey = e => {
+      if (e.key === 'Escape') setFullOpen(false)
+    }
+    document.addEventListener('keydown', onKey)
+    const prevOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.removeEventListener('keydown', onKey)
+      document.body.style.overflow = prevOverflow
+    }
+  }, [fullOpen])
+
+  if (fileLooksLikeImage(file, src)) {
+    if (!src) {
+      return (
+        <div style={{ fontSize: 12, color: 'rgba(212,175,55,0.45)', marginBottom: 4 }}>
+          Imagem indisponível · {file.name || 'arquivo'}
+        </div>
+      )
+    }
+    return (
+      <>
+        <div style={{ marginBottom: 4 }}>
+          <button
+            type="button"
+            onClick={() => setFullOpen(true)}
+            aria-label="Ver imagem em tamanho grande"
+            style={{
+              display: 'block',
+              padding: 0,
+              margin: 0,
+              border: `1px solid ${mine ? 'rgba(255,255,255,0.12)' : 'rgba(212,175,55,0.28)'}`,
+              background: mine ? 'rgba(0,0,0,0.25)' : 'rgba(212,175,55,0.06)',
+              borderRadius: 10,
+              overflow: 'hidden',
+              cursor: 'pointer',
+              width: '100%',
+              maxWidth: 220,
+              WebkitTapHighlightColor: 'transparent',
+            }}
+          >
+            <div style={{ width: '100%', height: 120, position: 'relative' }}>
+              <img
+                src={src}
+                alt=""
+                loading="lazy"
+                decoding="async"
+                draggable={false}
+                style={{
+                  position: 'absolute',
+                  inset: 0,
+                  width: '100%',
+                  height: '100%',
+                  objectFit: 'cover',
+                }}
+              />
+            </div>
+          </button>
+          <div style={{ fontSize: 10, color: 'rgba(212,175,55,0.45)', marginTop: 4 }}>
+            {file.name} · {fmtSize(file.size)} · toque para ampliar
+          </div>
+        </div>
+        {fullOpen && (
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Imagem em tamanho grande"
+            style={{
+              position: 'fixed',
+              inset: 0,
+              zIndex: 400,
+              background: 'rgba(0,0,0,0.93)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding:
+                'max(12px, env(safe-area-inset-top, 0px)) max(12px, env(safe-area-inset-right, 0px)) max(12px, env(safe-area-inset-bottom, 0px)) max(12px, env(safe-area-inset-left, 0px))',
+            }}
+            onClick={() => setFullOpen(false)}
+          >
+            <button
+              type="button"
+              aria-label="Fechar"
+              onClick={e => {
+                e.stopPropagation()
+                setFullOpen(false)
+              }}
+              style={{
+                position: 'fixed',
+                top: 'max(10px, env(safe-area-inset-top, 0px))',
+                right: 'max(10px, env(safe-area-inset-right, 0px))',
+                zIndex: 401,
+                width: 44,
+                height: 44,
+                borderRadius: '50%',
+                border: '1px solid rgba(255,255,255,0.28)',
+                background: 'rgba(0,0,0,0.55)',
+                color: '#fff',
+                fontSize: 20,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                lineHeight: 1,
+                fontFamily: 'inherit',
+              }}
+            >
+              ✕
+            </button>
+            <div
+              onClick={e => e.stopPropagation()}
+              style={{
+                flex: '1 1 auto',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                minWidth: 0,
+                minHeight: 0,
+                width: '100%',
+                height: '100%',
+                maxHeight: '100%',
+              }}
+            >
+              <img
+                src={src}
+                alt={file.name || 'Imagem enviada no chat'}
+                style={{
+                  maxWidth: '100%',
+                  maxHeight: 'min(92dvh, calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 56px))',
+                  width: 'auto',
+                  height: 'auto',
+                  objectFit: 'contain',
+                  borderRadius: 4,
+                  boxShadow: '0 12px 48px rgba(0,0,0,0.65)',
+                }}
+              />
+            </div>
+          </div>
+        )}
+      </>
+    )
+  }
   return (
     <a
       href={src} download={file.name}
@@ -194,7 +356,13 @@ function OnlineModal({ users, onClose }) {
 }
 
 const sm = {
-  overlay: { position: 'fixed', inset: 0, zIndex: 100, display: 'flex', alignItems: 'flex-start', justifyContent: 'flex-end', padding: '62px 16px 0' },
+  overlay: {
+    position: 'fixed', inset: 0, zIndex: 100, display: 'flex', alignItems: 'flex-start', justifyContent: 'flex-end',
+    paddingTop: 'max(62px, calc(16px + env(safe-area-inset-top, 0px)))',
+    paddingRight: 'max(16px, env(safe-area-inset-right, 0px))',
+    paddingBottom: 0,
+    paddingLeft: 'max(16px, env(safe-area-inset-left, 0px))',
+  },
   panel: { background: '#0a0a0a', border: '1px solid rgba(212,175,55,0.4)', borderRadius: 14, minWidth: 200, boxShadow: '0 8px 40px rgba(0,0,0,0.8), 0 0 24px rgba(212,175,55,0.08)', overflow: 'hidden' },
   header: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', borderBottom: '1px solid rgba(212,175,55,0.15)' },
   title: { fontSize: 11, fontWeight: 700, color: '#D4AF37', letterSpacing: '0.08em', textTransform: 'uppercase' },
@@ -228,7 +396,12 @@ export default function App() {
   const [notifPerm, setNotifPerm]     = useState(() =>
     typeof Notification !== 'undefined' ? Notification.permission : 'unsupported'
   )
+  /** Chrome/Edge Android: evento nativo “Instalar app” */
+  const [pwaInstallDeferred, setPwaInstallDeferred] = useState(null)
   const [showEmojiPicker, setShowEmojiPicker] = useState(false)
+  /** Snapshot bruto de `typing/` (reavaliado no relógio para sumir entradas velhas sem novo evento) */
+  const [typingSnap, setTypingSnap]     = useState(null)
+  const [typingUsers, setTypingUsers]   = useState([])
   const [editingId, setEditingId]       = useState(null)
   const [editDraft, setEditDraft]       = useState('')
   const [msgActionBusy, setMsgActionBusy] = useState(null)
@@ -240,6 +413,10 @@ export default function App() {
   const knownIdsRef  = useRef(null)
   const joinTimeRef  = useRef(Date.now())
   const userIdRef    = useRef(userId)
+  const nameRef      = useRef(name)
+  nameRef.current = name
+  const typingTimersRef = useRef({ idle: null, trailing: null })
+  const lastTypingWriteRef = useRef(0)
 
   // ── Notificações ──
   const requestNotifPermission = async () => {
@@ -248,6 +425,24 @@ export default function App() {
     const perm = await Notification.requestPermission()
     setNotifPerm(perm)
   }
+
+  const runPwaInstall = async () => {
+    if (!pwaInstallDeferred) return
+    try {
+      await pwaInstallDeferred.prompt()
+      await pwaInstallDeferred.userChoice
+    } catch (_) { /* utilizador cancelou ou navegador recusou */ }
+    setPwaInstallDeferred(null)
+  }
+
+  useEffect(() => {
+    const onBeforeInstall = e => {
+      e.preventDefault()
+      setPwaInstallDeferred(e)
+    }
+    window.addEventListener('beforeinstallprompt', onBeforeInstall)
+    return () => window.removeEventListener('beforeinstallprompt', onBeforeInstall)
+  }, [])
 
   // Função global de notificação — não depende de closure
   // messageId em tag evita que o Chrome substitua todas pelas mesmas (tag fixa = só a última aparece)
@@ -288,6 +483,47 @@ export default function App() {
     })
   }
 
+  /** Remove indicador local de digitação e timers associados */
+  const clearTypingBroadcast = () => {
+    const T = typingTimersRef.current
+    if (T.idle) { clearTimeout(T.idle); T.idle = null }
+    if (T.trailing) { clearTimeout(T.trailing); T.trailing = null }
+    lastTypingWriteRef.current = 0
+    remove(dbRef(db, `typing/${userId}`)).catch(() => {})
+  }
+
+  /** Atualiza RTDB para outros verem "está digitando" (com throttle e parada automática) */
+  const touchTypingBroadcast = textValue => {
+    if (!joined) return
+    const v = String(textValue ?? '').trim()
+    if (!v) {
+      clearTypingBroadcast()
+      return
+    }
+    const r = dbRef(db, `typing/${userId}`)
+    const now = Date.now()
+    const T = typingTimersRef.current
+    const writePayload = () => {
+      lastTypingWriteRef.current = Date.now()
+      const label = (nameRef.current || '').trim() || 'Alguém'
+      set(r, { name: label, ts: lastTypingWriteRef.current }).catch(() => {})
+    }
+    if (now - lastTypingWriteRef.current >= 700) {
+      if (T.trailing) { clearTimeout(T.trailing); T.trailing = null }
+      writePayload()
+    } else if (!T.trailing) {
+      T.trailing = setTimeout(() => {
+        T.trailing = null
+        writePayload()
+      }, 700 - (now - lastTypingWriteRef.current))
+    }
+    if (T.idle) clearTimeout(T.idle)
+    T.idle = setTimeout(() => {
+      T.idle = null
+      clearTypingBroadcast()
+    }, 2800)
+  }
+
   const handleJoin = () => {
     if (!name.trim()) return
     const admin = adminCode.trim() === ADMIN_CODE
@@ -298,6 +534,7 @@ export default function App() {
   }
 
   const handleExit = () => {
+    clearTypingBroadcast()
     clearSession()
     setJoined(false)
     setIsAdmin(false)
@@ -383,18 +620,77 @@ export default function App() {
     return () => document.removeEventListener('mousedown', close)
   }, [showEmojiPicker])
 
+  // Presença em `typing/`: limpar ao cair conexão; remover entrada ao sair da sala
+  useEffect(() => {
+    if (!joined) return
+    const selfTypingRef = dbRef(db, `typing/${userId}`)
+    const connectedRef = dbRef(db, '.info/connected')
+    const unsub = onValue(connectedRef, snap => {
+      if (snap.val() === true) {
+        onDisconnect(selfTypingRef).remove().catch(() => {})
+      }
+    })
+    return () => {
+      unsub()
+      remove(selfTypingRef).catch(() => {})
+    }
+  }, [joined, userId])
+
+  useEffect(() => {
+    if (!joined) {
+      setTypingSnap(null)
+      return
+    }
+    const unsub = onValue(dbRef(db, 'typing'), snap => {
+      setTypingSnap(snap.val())
+    })
+    return () => {
+      unsub()
+      setTypingSnap(null)
+    }
+  }, [joined])
+
+  useEffect(() => {
+    if (!joined) {
+      setTypingUsers([])
+      return
+    }
+    const STALE_MS = 4000
+    const recompute = () => {
+      const data = typingSnap
+      const now = Date.now()
+      const out = []
+      if (data && typeof data === 'object') {
+        Object.entries(data).forEach(([key, v]) => {
+          if (key === userId) return
+          if (!v || typeof v.ts !== 'number') return
+          if (now - v.ts > STALE_MS) return
+          const n = String(v.name ?? '').trim() || 'Alguém'
+          out.push({ uid: key, name: n })
+        })
+      }
+      setTypingUsers(out)
+    }
+    recompute()
+    const id = setInterval(recompute, 600)
+    return () => clearInterval(id)
+  }, [joined, userId, typingSnap])
+
   const insertEmoji = emoji => {
     const el = messageInputRef.current
     if (!el) {
-      setInput(prev => collapseChatLineBreaks(prev + emoji))
-      setShowEmojiPicker(false)
+      setInput(prev => {
+        const next = collapseChatLineBreaks(prev + emoji)
+        touchTypingBroadcast(next)
+        return next
+      })
       return
     }
     const start = el.selectionStart ?? input.length
     const end = el.selectionEnd ?? input.length
     const next = collapseChatLineBreaks(input.slice(0, start) + emoji + input.slice(end))
     setInput(next)
-    setShowEmojiPicker(false)
+    touchTypingBroadcast(next)
     requestAnimationFrame(() => {
       el.focus()
       // setSelectionRange usa índices UTF-16; string.length está alinhado a isso
@@ -405,6 +701,7 @@ export default function App() {
 
   const send = async () => {
     if (!input.trim() && !pendingFile) return
+    clearTypingBroadcast()
     setSending(true)
     try {
       const msgRef = await push(dbRef(db, 'messages'), {
@@ -647,14 +944,54 @@ export default function App() {
         </div>
       </div>
 
+      {joined && !isStandalonePWA() && (isAndroidDevice() || isIOSDevice()) && (
+        <div style={s.pwaMobileHint}>
+          <div style={s.pwaMobileHintTitle}>📱 Celular: avisos com o chat em segundo plano</div>
+          {isAndroidDevice() && (
+            <p style={s.pwaMobileHintText}>
+              Instale o <strong>NVB Chat</strong> como aplicativo: menu do Chrome (<strong>⋮</strong>) →{' '}
+              <strong>Instalar app</strong> ou <strong>Adicionar à tela inicial</strong>. Depois use o ícone do app e ative as notificações abaixo.
+            </p>
+          )}
+          {isIOSDevice() && (
+            <p style={s.pwaMobileHintText}>
+              No <strong>iPhone ou iPad</strong> (Safari ou outro navegador), toque em <strong>Compartilhar</strong> (↑) → <strong>Adicionar à Tela de Início</strong> → Adicionar.
+              Abra o chat pelo novo ícone, entre na sala e toque em <strong>Ativar</strong> nas notificações.
+            </p>
+          )}
+          {isAndroidDevice() && pwaInstallDeferred && (
+            <button type="button" style={s.pwaInstallBtn} onClick={runPwaInstall}>
+              Instalar app agora
+            </button>
+          )}
+        </div>
+      )}
+
       {notifPerm !== 'granted' && notifPerm !== 'unsupported' && (
         <div style={s.notifBanner}>
           {notifPerm === 'denied' ? (
-            <span>
-              🔒 Cadeado na barra → <b>Notificações</b> → <b>Permitir</b> → recarregue a página
+            <span style={s.notifBannerText}>
+              {isIOSDevice() ? (
+                <>
+                  Notificações bloqueadas. No Safari: ícone <strong>aA</strong> → <strong>Notificações</strong> → <strong>Permitir</strong>.
+                  Se abre pelo ícone na Tela de Início: <strong>Ajustes</strong> do iPhone → <strong>NVB Chat</strong> → <strong>Notificações</strong> → Permitir.
+                  Depois recarregue esta página.
+                </>
+              ) : isAndroidDevice() ? (
+                <>
+                  Notificações bloqueadas. No Chrome: <strong>⋮</strong> → <strong>Definições</strong> → <strong>Definições do site</strong> → <strong>Notificações</strong> → permitir este site.
+                  Ou toque no cadeado na barra de endereços → Permissões → Notificações. Depois recarregue.
+                </>
+              ) : (
+                <>
+                  🔒 Cadeado na barra → <b>Notificações</b> → <b>Permitir</b> → recarregue a página
+                </>
+              )}
             </span>
           ) : (
-            <span>🔔 Ative notificações para avisos de novas mensagens</span>
+            <span style={s.notifBannerText}>
+              🔔 Ative as notificações para ser avisado de novas mensagens (funciona melhor com o app instalado no Android ou o atalho na Tela de Início no iPhone).
+            </span>
           )}
           {notifPerm === 'default' && (
             <button style={s.notifBannerBtn} onClick={requestNotifPermission}>Ativar</button>
@@ -843,6 +1180,19 @@ export default function App() {
             </div>
           )}
 
+          {typingUsers.length > 0 && (
+            <div style={s.typingBar} role="status" aria-live="polite">
+              {typingUsers.length === 1
+                ? `${typingUsers[0].name} está digitando…`
+                : typingUsers.length === 2
+                  ? `${typingUsers[0].name} e ${typingUsers[1].name} estão digitando…`
+                  : `${typingUsers
+                      .slice(0, 2)
+                      .map(u => u.name)
+                      .join(', ')} e mais ${typingUsers.length - 2} estão digitando…`}
+            </div>
+          )}
+
           <div style={s.inputBar}>
             <div ref={emojiPickerRef} style={s.emojiPickerWrap}>
               <button
@@ -863,6 +1213,7 @@ export default function App() {
                       key={`${emo}-${i}`}
                       className="emoji-panel-btn"
                       style={s.emojiCell}
+                      onMouseDown={e => e.preventDefault()}
                       onClick={() => insertEmoji(emo)}
                       title={emo}
                     >
@@ -888,7 +1239,11 @@ export default function App() {
               style={s.chatMsgInput}
               placeholder={pendingFile ? 'Adicione uma legenda...' : 'Mensagem...'}
               value={input}
-              onChange={e => setInput(collapseChatLineBreaks(e.target.value))}
+              onChange={e => {
+                const v = collapseChatLineBreaks(e.target.value)
+                setInput(v)
+                touchTypingBroadcast(v)
+              }}
               onKeyDown={handleKey}
             />
             <button
@@ -1111,7 +1466,7 @@ const s = {
   bgBlur: { position: 'fixed', inset: 0, backgroundImage: 'url(/images/image.jpg)', backgroundSize: 'cover', backgroundPosition: 'center', filter: 'blur(2px)', transform: 'scale(1.04)', opacity: 0.62, zIndex: -1, pointerEvents: 'none' },
 
   // Login
-  loginOuter: { flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px 16px', position: 'relative', zIndex: 1 },
+  loginOuter: { flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 'max(24px, env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) max(24px, env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px))', position: 'relative', zIndex: 1 },
   loginCard: {
     width: '100%', maxWidth: 400, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 18,
     background: '#080808', border: `1px solid ${GOLD_DIM}`, borderRadius: 20, padding: '44px 36px',
@@ -1130,10 +1485,14 @@ const s = {
     fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit', letterSpacing: '0.02em',
   },
 
-  // Header
+  // Header — respeita entalhe / Dynamic Island / barra de status (iOS + viewport-fit=cover)
   header: {
     display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-    padding: '10px 18px', borderBottom: `2px solid rgba(212,175,55,0.45)`,
+    paddingTop: 'max(10px, env(safe-area-inset-top, 0px))',
+    paddingRight: 'max(18px, env(safe-area-inset-right, 0px))',
+    paddingBottom: '10px',
+    paddingLeft: 'max(18px, env(safe-area-inset-left, 0px))',
+    borderBottom: `2px solid rgba(212,175,55,0.45)`,
     background: '#0a0a0a', flexShrink: 0, zIndex: 10, position: 'relative',
     boxShadow: '0 2px 20px rgba(0,0,0,0.8)',
   },
@@ -1226,6 +1585,15 @@ const s = {
   },
   clearErr: { background: 'none', border: 'none', color: '#f87171', cursor: 'pointer', fontSize: 14 },
 
+  typingBar: {
+    padding: '8px 18px 4px',
+    fontSize: 12,
+    color: 'rgba(212,175,55,0.55)',
+    fontStyle: 'italic',
+    flexShrink: 0,
+    letterSpacing: '0.02em',
+  },
+
   // Input bar
   inputBar: {
     display: 'flex', gap: 8,
@@ -1247,15 +1615,25 @@ const s = {
   emojiPickerWrap: { position: 'relative', flexShrink: 0 },
   emojiPopover: {
     position: 'absolute', bottom: 'calc(100% + 8px)', left: 0, zIndex: 50,
-    display: 'grid', gridTemplateColumns: 'repeat(8, 1fr)', gap: 4,
-    padding: 10, maxWidth: 280,
+    display: 'grid', gridTemplateColumns: 'repeat(8, minmax(0, 1fr))', gap: 4,
+    padding: 10,
+    width: 'min(calc(100vw - 24px), 304px)',
+    maxWidth: 'min(calc(100vw - 24px), 304px)',
+    boxSizing: 'border-box',
     background: '#121212', border: `1px solid ${GOLD_DIM}`, borderRadius: 14,
     boxShadow: '0 12px 40px rgba(0,0,0,0.65)',
   },
   emojiCell: {
-    width: 34, height: 34, padding: 0, fontSize: 20, lineHeight: 1,
+    width: '100%',
+    minWidth: 0,
+    aspectRatio: '1',
+    height: 'auto',
+    padding: 0,
+    fontSize: 'clamp(16px, 5.2vw, 22px)',
+    lineHeight: 1,
     background: 'rgba(255,255,255,0.04)', border: '1px solid transparent', borderRadius: 8,
     cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+    boxSizing: 'border-box',
   },
   chatMsgInput: {
     flex: 1, minWidth: 0, background: '#0d0d0d', border: `1.5px solid rgba(255,255,255,0.08)`,
@@ -1275,10 +1653,38 @@ const s = {
   adminToggleBtn: { background: 'none', border: 'none', color: 'rgba(212,175,55,0.35)', fontSize: 11, cursor: 'pointer', fontFamily: 'inherit', textDecoration: 'underline', padding: 0 },
   clearBtn: { background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 8, padding: '5px 12px', color: '#f87171', fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' },
   notifBanner: {
-    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12,
-    padding: '8px 16px', flexShrink: 0, position: 'relative', zIndex: 9,
+    display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'center', gap: 12,
+    paddingTop: '10px',
+    paddingRight: 'max(16px, env(safe-area-inset-right, 0px))',
+    paddingBottom: '10px',
+    paddingLeft: 'max(16px, env(safe-area-inset-left, 0px))',
+    flexShrink: 0, position: 'relative', zIndex: 9,
     background: 'rgba(212,175,55,0.1)', borderBottom: '1px solid rgba(212,175,55,0.2)',
     fontSize: 12, color: 'rgba(255,255,255,0.7)',
+  },
+  notifBannerText: {
+    flex: '1 1 200px', textAlign: 'center', lineHeight: 1.45, minWidth: 0,
+  },
+  pwaMobileHint: {
+    flexShrink: 0, position: 'relative', zIndex: 9,
+    paddingTop: '12px',
+    paddingRight: 'max(16px, env(safe-area-inset-right, 0px))',
+    paddingBottom: '14px',
+    paddingLeft: 'max(16px, env(safe-area-inset-left, 0px))',
+    background: 'rgba(30,58,138,0.22)', borderBottom: '1px solid rgba(96,165,250,0.25)',
+    color: 'rgba(226,232,240,0.92)', fontSize: 13,
+  },
+  pwaMobileHintTitle: {
+    fontSize: 11, fontWeight: 800, letterSpacing: '0.1em', textTransform: 'uppercase',
+    color: 'rgba(147,197,253,0.95)', marginBottom: 8,
+  },
+  pwaMobileHintText: {
+    margin: 0, lineHeight: 1.5, fontSize: 13, color: 'rgba(241,245,249,0.88)', maxWidth: 560, marginLeft: 'auto', marginRight: 'auto',
+  },
+  pwaInstallBtn: {
+    display: 'block', margin: '12px auto 0', width: '100%', maxWidth: 280,
+    background: 'linear-gradient(135deg, #3b82f6, #60a5fa)', border: 'none', borderRadius: 10,
+    padding: '10px 16px', color: '#fff', fontSize: 14, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit',
   },
   notifBannerBtn: {
     background: 'linear-gradient(135deg, #C9A84C, #FFD700)', border: 'none', borderRadius: 6,
