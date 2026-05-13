@@ -444,24 +444,51 @@ export default function App() {
     return () => window.removeEventListener('beforeinstallprompt', onBeforeInstall)
   }, [])
 
-  // Função global de notificação — não depende de closure
-  // messageId em tag evita que o Chrome substitua todas pelas mesmas (tag fixa = só a última aparece)
-  function fireNotif(senderName, text, messageId) {
+  // Notificações: no Android o caminho via Service Worker (showNotification) é o mais fiável.
+  // Ícone absoluto e ficheiro existente (pwa-192) — URL /notif-icon.png ausente quebrava notifs em vários devices.
+  // iOS: sem Web Push + FCM, o sistema só entrega bem com o app na Tela de Início e limites da Apple.
+  async function fireNotif(senderName, text, messageId) {
     if (typeof Notification === 'undefined') return
     if (Notification.permission !== 'granted') return
     const body = text
       ? (text.length > 80 ? text.slice(0, 80) + '…' : text)
       : '📎 Arquivo recebido'
     const tag = messageId ? `chat-${messageId}` : `chat-${Date.now()}`
+    const origin = typeof window !== 'undefined' && window.location?.origin ? window.location.origin : ''
+    const iconUrl = origin ? `${origin}/images/pwa-192x192.png` : '/images/pwa-192x192.png'
+
+    const swOptions = {
+      body,
+      icon: iconUrl,
+      badge: iconUrl,
+      tag,
+      lang: 'pt-BR',
+      silent: false,
+      data: { url: origin ? `${origin}/` : '/' },
+    }
+    if (!isIOSDevice()) swOptions.vibrate = [140, 60, 140]
+
+    if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+      try {
+        const reg = await navigator.serviceWorker.ready
+        await reg.showNotification(senderName, swOptions)
+        return
+      } catch (e) {
+        console.warn('Notif via service worker:', e)
+      }
+    }
+
     try {
       new Notification(senderName, {
         body,
-        icon: '/images/notif-icon.png',
+        icon: iconUrl,
         tag,
         lang: 'pt-BR',
         silent: false,
       })
-    } catch (e) { console.warn('Notif error:', e) }
+    } catch (e) {
+      console.warn('Notif via window:', e)
+    }
   }
 
   // ── Admin ──
@@ -957,6 +984,8 @@ export default function App() {
             <p style={s.pwaMobileHintText}>
               No <strong>iPhone ou iPad</strong> (Safari ou outro navegador), toque em <strong>Compartilhar</strong> (↑) → <strong>Adicionar à Tela de Início</strong> → Adicionar.
               Abra o chat pelo novo ícone, entre na sala e toque em <strong>Ativar</strong> nas notificações.
+              {' '}
+              <strong>Nota:</strong> a Apple limita notificações web em segundo plano; com o Safari só numa aba, os avisos costumam aparecer sobretudo com o chat à frente ou recente na multitarefa.
             </p>
           )}
           {isAndroidDevice() && pwaInstallDeferred && (
@@ -1005,7 +1034,7 @@ export default function App() {
         <div style={{ ...s.notifBanner, background: 'rgba(74,222,128,0.08)', borderBottomColor: 'rgba(74,222,128,0.2)' }}>
           <span style={{ color: '#4ade80', fontSize: 12 }}>✅ Notificações ativas</span>
           <button style={{ ...s.notifBannerBtn, background: '#4ade80' }}
-            onClick={() => fireNotif('Chat - Nova Vida', '🔔 Notificações estão funcionando!', null)}>
+            onClick={() => { void fireNotif('Chat - Nova Vida', '🔔 Notificações estão funcionando!', null) }}>
             Testar
           </button>
         </div>

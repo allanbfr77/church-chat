@@ -8,6 +8,20 @@ const CACHE_NAME = 'nvb-chat-v1';
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
 
+// Toque na notificação: voltar ao chat (Android / desktop)
+self.addEventListener('notificationclick', event => {
+  event.notification.close();
+  const url = event.notification.data?.url || self.registration.scope;
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(clientList => {
+      for (const c of clientList) {
+        if (c.url.startsWith(self.location.origin) && 'focus' in c) return c.focus();
+      }
+      if (self.clients.openWindow) return self.clients.openWindow(url);
+    })
+  );
+});
+
 // Estratégia network-first: tenta rede, fallback para cache só em recursos estáticos
 self.addEventListener('fetch', e => {
   const { request } = e;
