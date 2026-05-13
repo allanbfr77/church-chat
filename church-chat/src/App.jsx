@@ -5,7 +5,6 @@ import {
   push,
   remove,
   update,
-  set,
   onValue,
   query,
   limitToLast,
@@ -17,10 +16,6 @@ const ADMIN_CODE = 'invb@admin'
 const MSG_APAGADA_FRASE = 'Esta mensagem foi apagada'
 /** Valor antigo — ainda reconhecido como apagada para mensagens já salvas */
 const LEGACY_MSG_SENTINEL = '__MSG_REMOVIDA__'
-
-/** Reações permitidas: uma por usuário por mensagem (substituir ou remover ao repetir) */
-const REACTION_CHOICES = ['👍', '👎', '❤️']
-const REACTION_ALLOWED = new Set(REACTION_CHOICES)
 
 // Emojis rápidos (o teclado do sistema também funciona no campo de mensagem)
 const EMOJI_PALETTE = [
@@ -72,15 +67,6 @@ function messageIsTombstone(m) {
   return false
 }
 
-function reactionCounts(reactionsRaw) {
-  const counts = { '👍': 0, '👎': 0, '❤️': 0 }
-  if (!reactionsRaw || typeof reactionsRaw !== 'object') return counts
-  for (const v of Object.values(reactionsRaw)) {
-    if (REACTION_ALLOWED.has(v)) counts[v]++
-  }
-  return counts
-}
-
 // ── Logo Component ───────────────────────────────────────────
 function Logo({ size = 'lg' }) {
   const h = size === 'lg' ? 90 : 38
@@ -110,6 +96,18 @@ function userColor(name) {
     hash |= 0
   }
   return USER_COLORS[Math.abs(hash) % USER_COLORS.length]
+}
+
+/** Primeira letra para avatar (suporta caracteres compostos) */
+function nameInitial(name) {
+  const t = String(name ?? '').trim()
+  if (!t) return '?'
+  const ch = Array.from(t)[0]
+  try {
+    return ch.toLocaleUpperCase('pt-BR')
+  } catch {
+    return ch.toUpperCase()
+  }
 }
 
 // ── Persistent Session ────────────────────────────────────────
@@ -226,7 +224,6 @@ export default function App() {
     typeof Notification !== 'undefined' ? Notification.permission : 'unsupported'
   )
   const [showEmojiPicker, setShowEmojiPicker] = useState(false)
-  const [reactionPickMsgId, setReactionPickMsgId] = useState(null)
   const [editingId, setEditingId]       = useState(null)
   const [editDraft, setEditDraft]       = useState('')
   const [msgActionBusy, setMsgActionBusy] = useState(null)
@@ -235,7 +232,6 @@ export default function App() {
   const textareaRef  = useRef(null)
   const fileRef      = useRef(null)
   const emojiPickerRef = useRef(null)
-  const reactionWrapRef = useRef(null)
   const knownIdsRef  = useRef(null)
   const joinTimeRef  = useRef(Date.now())
   const userIdRef    = useRef(userId)
@@ -382,27 +378,6 @@ export default function App() {
     return () => document.removeEventListener('mousedown', close)
   }, [showEmojiPicker])
 
-  useEffect(() => {
-    if (!reactionPickMsgId) return
-    const close = e => {
-      if (reactionWrapRef.current && !reactionWrapRef.current.contains(e.target)) {
-        setReactionPickMsgId(null)
-      }
-    }
-    const onKey = e => {
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        setReactionPickMsgId(null)
-      }
-    }
-    document.addEventListener('mousedown', close)
-    document.addEventListener('keydown', onKey)
-    return () => {
-      document.removeEventListener('mousedown', close)
-      document.removeEventListener('keydown', onKey)
-    }
-  }, [reactionPickMsgId])
-
   const insertEmoji = emoji => {
     const el = textareaRef.current
     if (!el) {
@@ -473,13 +448,11 @@ export default function App() {
 
   const startEdit = m => {
     if (m.uid !== userId || messageIsTombstone(m) || m.editedOnce) return
-    setReactionPickMsgId(null)
     setEditingId(m.id)
     setEditDraft(m.text || '')
   }
 
   const cancelEdit = () => {
-    setReactionPickMsgId(null)
     setEditingId(null)
     setEditDraft('')
   }
@@ -539,22 +512,6 @@ export default function App() {
         setMsgActionBusy(null)
       },
     })
-  }
-
-  const setMessageReaction = async (msgId, emoji) => {
-    if (!REACTION_ALLOWED.has(emoji)) return
-    const msg = messages.find(x => x.id === msgId)
-    const cur = msg?.reactions?.[userId]
-    const rPath = dbRef(db, `messages/${msgId}/reactions/${userId}`)
-    setFileError('')
-    try {
-      if (cur === emoji) await remove(rPath)
-      else await set(rPath, emoji)
-      setReactionPickMsgId(null)
-    } catch (e) {
-      console.error(e)
-      setFileError('Não foi possível salvar a reação.')
-    }
   }
 
   useEffect(() => {
@@ -741,81 +698,100 @@ export default function App() {
               const busy     = msgActionBusy === m.id
               const canEditMine = mine && !m.editedOnce
 
+              const peerColor = !mine ? userColor(m.name || '') : null
+
               return (
                 <div
                   key={m.id}
                   style={{
                     ...s.row,
                     justifyContent: mine ? 'flex-end' : 'flex-start',
-                    ...(reactionPickMsgId === m.id
-                      ? { position: 'relative', zIndex: 40, marginBottom: 52 }
-                      : {}),
                   }}
                 >
-                  <div style={s.msgRowWithReaction}>
-                    {mine && !isEditing && (
-                      <MessageReactionCluster
-                        message={m}
-                        userId={userId}
-                        mine
-                        isEditing={isEditing}
-                        pickerOpen={reactionPickMsgId === m.id}
-                        onTogglePicker={() => {
-                          setShowEmojiPicker(false)
-                          setReactionPickMsgId(prev => (prev === m.id ? null : m.id))
-                        }}
-                        outerRef={reactionPickMsgId === m.id ? reactionWrapRef : undefined}
-                        onPickReaction={setMessageReaction}
-                      />
+                  <div style={mine ? s.msgRowOuterMine : s.msgRowOuterPeer}>
+                    {!mine && (
+                      <div style={s.peerAvatarCol}>
+                        {showName ? (
+                          <div
+                            style={{
+                              ...s.peerAvatar,
+                              color: peerColor,
+                              borderColor: `${peerColor}55`,
+                              background: `${peerColor}18`,
+                              boxShadow: `0 0 0 1px ${peerColor}22 inset`,
+                            }}
+                            aria-label={m.name ? `Avatar: ${m.name}` : 'Avatar'}
+                          >
+                            {nameInitial(m.name)}
+                          </div>
+                        ) : (
+                          <div style={s.peerAvatarSpacer} aria-hidden />
+                        )}
+                      </div>
                     )}
+                  <div style={s.msgRowWithReaction}>
                     <div className="bubble-wrap" style={{ flexShrink: 0 }}>
                     {showName && (
-                      <div style={{ ...s.senderName, color: userColor(m.name || '') }}>
+                      <div
+                        style={{
+                          ...s.senderName,
+                          ...(mine ? {} : s.senderNamePeer),
+                          color: userColor(m.name || ''),
+                        }}
+                      >
                         {m.name}
                       </div>
                     )}
-                    <div style={mine ? s.bubbleMine : s.bubbleOther}>
-                      <div style={s.bubbleBody}>
-                        {isEditing ? (
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                            {m.file && <FilePreview file={m.file} mine={mine} />}
-                            <textarea
-                              style={{ ...s.editMsgTextarea, minHeight: 72 }}
-                              value={editDraft}
-                              onChange={e => setEditDraft(e.target.value)}
-                              onKeyDown={e => {
-                                if (e.key === 'Enter' && !e.shiftKey) {
-                                  e.preventDefault()
-                                  saveEdit()
-                                }
-                              }}
-                              autoFocus
-                              rows={3}
-                            />
-                            <div style={s.editActions}>
-                              <button type="button" style={s.editSaveBtn} onClick={saveEdit} disabled={busy}>
-                                {busy ? '…' : 'Salvar'}
-                              </button>
-                              <button type="button" style={s.editCancelBtn} onClick={cancelEdit} disabled={busy}>
-                                Cancelar
-                              </button>
+                    <div
+                      style={
+                        mine
+                          ? s.bubbleMine
+                          : { ...s.bubbleOther, borderLeft: `4px solid ${peerColor}` }
+                      }
+                    >
+                      <div style={s.bubbleTopRow}>
+                        <div style={s.bubbleBody}>
+                          {isEditing ? (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                              {m.file && <FilePreview file={m.file} mine={mine} />}
+                              <textarea
+                                style={{ ...s.editMsgTextarea, minHeight: 72 }}
+                                value={editDraft}
+                                onChange={e => setEditDraft(e.target.value)}
+                                onKeyDown={e => {
+                                  if (e.key === 'Enter' && !e.shiftKey) {
+                                    e.preventDefault()
+                                    saveEdit()
+                                  }
+                                }}
+                                autoFocus
+                                rows={3}
+                              />
+                              <div style={s.editActions}>
+                                <button type="button" style={s.editSaveBtn} onClick={saveEdit} disabled={busy}>
+                                  {busy ? '…' : 'Salvar'}
+                                </button>
+                                <button type="button" style={s.editCancelBtn} onClick={cancelEdit} disabled={busy}>
+                                  Cancelar
+                                </button>
+                              </div>
                             </div>
-                          </div>
-                        ) : (
-                          <>
-                            {m.file && <FilePreview file={m.file} mine={mine} />}
-                            {m.text && <div style={s.msgText}>{m.text}</div>}
-                            {m.editedOnce && (
-                              <div style={s.msgEditedHint}>editada</div>
-                            )}
-                          </>
-                        )}
-                      </div>
-                      <div style={s.bubbleMetaRow}>
-                        <span style={s.msgTime}>{timeStr(m.ts)}</span>
-                        {mine && (
-                          <span className={sent ? 'check-on' : 'check-off'} style={s.check}>✓</span>
-                        )}
+                          ) : (
+                            <>
+                              {m.file && <FilePreview file={m.file} mine={mine} />}
+                              {m.text && <div style={s.msgText}>{m.text}</div>}
+                              {m.editedOnce && (
+                                <div style={s.msgEditedHint}>editada</div>
+                              )}
+                            </>
+                          )}
+                        </div>
+                        <div style={s.bubbleMetaInline}>
+                          <span style={s.msgTime}>{timeStr(m.ts)}</span>
+                          {mine && (
+                            <span className={sent ? 'check-on' : 'check-off'} style={s.check}>✓</span>
+                          )}
+                        </div>
                       </div>
                     </div>
                     {mine && !isEditing && (
@@ -843,22 +819,8 @@ export default function App() {
                       </div>
                     )}
                   </div>
-                    {!mine && !isEditing && (
-                      <MessageReactionCluster
-                        message={m}
-                        userId={userId}
-                        mine={false}
-                        isEditing={isEditing}
-                        pickerOpen={reactionPickMsgId === m.id}
-                        onTogglePicker={() => {
-                          setShowEmojiPicker(false)
-                          setReactionPickMsgId(prev => (prev === m.id ? null : m.id))
-                        }}
-                        outerRef={reactionPickMsgId === m.id ? reactionWrapRef : undefined}
-                        onPickReaction={setMessageReaction}
-                      />
-                    )}
                   </div>
+                </div>
                 </div>
               )
             })}
@@ -894,7 +856,7 @@ export default function App() {
               <button
                 type="button"
                 style={{ ...s.attachBtn, fontSize: 20 }}
-                onClick={() => { setReactionPickMsgId(null); setShowEmojiPicker(v => !v) }}
+                onClick={() => { setShowEmojiPicker(v => !v) }}
                 title="Emoticons"
                 aria-expanded={showEmojiPicker}
                 aria-haspopup="true"
@@ -978,14 +940,6 @@ const css = `
     -webkit-tap-highlight-color: transparent;
     touch-action: manipulation;
   }
-  .reaction-add-btn:hover {
-    border-color: rgba(255,255,255,0.32) !important;
-    color: rgba(255,255,255,0.55) !important;
-    background: rgba(255,255,255,0.04) !important;
-  }
-  .reaction-pop-item:hover {
-    background: rgba(255,255,255,0.06) !important;
-  }
   .emoji-panel-btn:hover {
     background: rgba(212,175,55,0.12) !important;
     border-color: rgba(212,175,55,0.2) !important;
@@ -999,7 +953,7 @@ const GOLD_FAINT = 'rgba(212,175,55,0.08)'
 
 const s = {
   page: { position: 'fixed', inset: 0, display: 'flex', flexDirection: 'column', background: '#000', isolation: 'isolate', fontFamily: "'Outfit', system-ui, sans-serif", color: '#e8e8ee' },
-  bgBlur: { position: 'fixed', inset: 0, backgroundImage: 'url(/images/image.jpg)', backgroundSize: 'cover', backgroundPosition: 'center', filter: 'blur(5px)', transform: 'scale(1.08)', opacity: 0.45, zIndex: -1, pointerEvents: 'none' },
+  bgBlur: { position: 'fixed', inset: 0, backgroundImage: 'url(/images/image.jpg)', backgroundSize: 'cover', backgroundPosition: 'center', filter: 'blur(2px)', transform: 'scale(1.04)', opacity: 0.62, zIndex: -1, pointerEvents: 'none' },
 
   // Login
   loginOuter: { flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px 16px', position: 'relative', zIndex: 1 },
@@ -1053,7 +1007,7 @@ const s = {
   },
   msgArea: {
     flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 3,
-    background: 'rgba(0,0,0,0.4)',
+    background: 'rgba(0,0,0,0.08)',
     padding:
       '16px calc(14px + env(safe-area-inset-right, 0px)) 10px calc(14px + env(safe-area-inset-left, 0px))',
   },
@@ -1087,27 +1041,49 @@ const s = {
     fontSize: 14, fontWeight: 700, paddingLeft: 12, marginBottom: 3,
     letterSpacing: '0.06em', textTransform: 'uppercase',
   },
+  senderNamePeer: { paddingLeft: 2 },
+  msgRowOuterMine: {
+    display: 'inline-flex', flexDirection: 'row', alignItems: 'flex-end', gap: 8,
+    maxWidth: 'min(100%, 520px)', position: 'relative',
+  },
+  msgRowOuterPeer: {
+    display: 'inline-flex', flexDirection: 'row', alignItems: 'flex-end', gap: 10,
+    maxWidth: 'min(100%, 520px)', position: 'relative',
+  },
+  peerAvatarCol: {
+    width: 38, flexShrink: 0, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end',
+    alignItems: 'center', paddingBottom: 2,
+  },
+  peerAvatar: {
+    width: 34, height: 34, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center',
+    fontSize: 14, fontWeight: 800, fontFamily: 'inherit', border: '2px solid', flexShrink: 0,
+  },
+  peerAvatarSpacer: { width: 34, height: 34, flexShrink: 0 },
 
   // Bubbles
   bubbleMine: {
     background: `linear-gradient(135deg, #2a1f00, #3d2d00)`,
     border: `1px solid rgba(212,175,55,0.35)`,
-    borderRadius: '18px 18px 4px 18px', padding: '9px 12px',
-    display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: 6,
+    borderRadius: '18px 18px 4px 18px', padding: '8px 11px',
+    display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: 0,
     boxSizing: 'border-box',
     width: 'fit-content', maxWidth: '100%', minWidth: 'min(100%, 120px)',
   },
   bubbleOther: {
     background: '#0d0d0d', border: `1px solid rgba(255,255,255,0.07)`,
-    borderRadius: '18px 18px 18px 4px', padding: '9px 12px',
-    display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: 6,
+    borderRadius: '18px 18px 18px 4px', padding: '8px 11px',
+    display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: 0,
     boxSizing: 'border-box',
     width: 'fit-content', maxWidth: '100%', minWidth: 'min(100%, 120px)',
   },
   bubbleBody: { width: '100%', minWidth: 0 },
-  bubbleMetaRow: {
-    display: 'flex', flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center',
-    gap: 6, flexShrink: 0,
+  bubbleTopRow: {
+    display: 'flex', flexDirection: 'row', alignItems: 'flex-end', gap: 10,
+    width: '100%', minWidth: 0,
+  },
+  bubbleMetaInline: {
+    display: 'flex', flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end',
+    gap: 5, flexShrink: 0, alignSelf: 'flex-end', paddingBottom: 1, marginLeft: 4,
   },
   msgText: {
     fontSize: 15, lineHeight: 1.5, color: '#fff',
@@ -1116,52 +1092,8 @@ const s = {
   msgEditedHint: { fontSize: 10, color: 'rgba(212,175,55,0.45)', marginTop: 4, fontWeight: 500 },
   msgRowWithReaction: {
     display: 'inline-flex', flexDirection: 'row', alignItems: 'flex-end', gap: 8,
-    maxWidth: 'min(100%, 520px)', position: 'relative',
+    position: 'relative', flex: '1 1 auto', minWidth: 0,
   },
-  reactionClusterRow: {
-    position: 'relative', flexShrink: 0, display: 'flex', flexDirection: 'row', flexWrap: 'wrap',
-    alignItems: 'center', gap: 6, paddingBottom: 2, maxWidth: 280,
-  },
-  reactionChip: {
-    display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 4,
-    padding: '3px 9px', borderRadius: 14,
-    background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
-    fontSize: 13, lineHeight: 1, userSelect: 'none', pointerEvents: 'none',
-  },
-  reactionChipEmoji: { fontSize: 15, lineHeight: 1 },
-  reactionChipCount: { fontSize: 12, fontWeight: 700, color: 'rgba(255,255,255,0.45)', minWidth: 14, textAlign: 'center' },
-  reactionPickerAnchor: { position: 'relative', flexShrink: 0, display: 'inline-flex' },
-  reactionOutlineBtnActive: {
-    borderColor: 'rgba(212,175,55,0.45)',
-    background: 'rgba(212,175,55,0.08)',
-  },
-  reactionOutlineBtn: {
-    width: 30, height: 30, borderRadius: '50%',
-    border: '1px solid rgba(255,255,255,0.22)',
-    background: 'transparent', color: 'rgba(255,255,255,0.4)',
-    cursor: 'pointer', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
-    padding: 0, fontFamily: 'inherit', lineHeight: 1,
-  },
-  reactionOutlineGlyph: {
-    fontSize: 18, fontWeight: 300, marginTop: -1, letterSpacing: 0,
-  },
-  reactionChosenGlyph: { fontSize: 16, lineHeight: 1, display: 'block' },
-  reactionPopover: {
-    position: 'absolute', top: 'calc(100% + 8px)', bottom: 'auto', left: '50%', transform: 'translateX(-50%)',
-    zIndex: 80,
-    display: 'flex', flexDirection: 'row', alignItems: 'stretch',
-    padding: 4, whiteSpace: 'nowrap',
-    background: '#101012', border: '1px solid rgba(255,255,255,0.12)',
-    borderRadius: 12, boxShadow: '0 12px 36px rgba(0,0,0,0.65)',
-  },
-  reactionPopBtn: {
-    display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 2,
-    padding: '8px 12px', margin: 0, flex: '0 0 auto',
-    background: 'transparent', border: 'none', borderRadius: 0,
-    cursor: 'pointer', fontFamily: 'inherit', color: 'rgba(255,255,255,0.88)',
-  },
-  reactionPopEmoji: { fontSize: 18, lineHeight: 1 },
-  reactionPopCount: { fontSize: 11, fontWeight: 600, color: 'rgba(255,255,255,0.38)', minWidth: 16, textAlign: 'center' },
   msgActions: {
     display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 6,
     paddingRight: 14, paddingLeft: 4, boxSizing: 'border-box', width: '100%',
@@ -1185,7 +1117,7 @@ const s = {
     borderRadius: 8, padding: '6px 14px', color: 'rgba(255,255,255,0.55)', fontSize: 12, fontWeight: 600,
     cursor: 'pointer', fontFamily: 'inherit',
   },
-  msgTime: { fontSize: 10, color: 'rgba(255,255,255,0.35)', whiteSpace: 'nowrap' },
+  msgTime: { fontSize: 10, color: 'rgba(255,255,255,0.32)', whiteSpace: 'nowrap', lineHeight: 1.2 },
   check: { fontSize: 13, color: GOLD, fontWeight: 700, lineHeight: 1 },
 
   // Pending / errors
@@ -1203,13 +1135,18 @@ const s = {
   },
   clearErr: { background: 'none', border: 'none', color: '#f87171', cursor: 'pointer', fontSize: 14 },
 
-  // Input bar (separador discreto — evita faixa dourada grossa junto ao fundo do painel)
+  // Input bar
   inputBar: {
     display: 'flex', gap: 8,
     padding:
-      '10px calc(12px + env(safe-area-inset-right, 0px)) max(10px, env(safe-area-inset-bottom, 0px)) calc(12px + env(safe-area-inset-left, 0px))',
-    borderTop: '1px solid rgba(255,255,255,0.08)',
-    background: 'rgba(5,5,5,0.72)',
+      '12px calc(12px + env(safe-area-inset-right, 0px)) max(12px, env(safe-area-inset-bottom, 0px)) calc(12px + env(safe-area-inset-left, 0px))',
+    borderTop: '1px solid rgba(255,255,255,0.05)',
+    borderLeft: '1px solid rgba(255,255,255,0.04)',
+    borderRight: '1px solid rgba(255,255,255,0.04)',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    background: 'rgba(14,14,18,0.78)',
+    boxShadow: '0 -10px 40px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.04)',
     flexShrink: 0, alignItems: 'flex-end',
   },
   attachBtn: {
@@ -1299,89 +1236,4 @@ const s = {
     borderRadius: 12, padding: '0 16px', color: '#fff', fontSize: 14, fontWeight: 800,
     cursor: 'pointer', fontFamily: 'inherit', boxShadow: '0 4px 20px rgba(220,38,38,0.25)',
   },
-}
-
-function MessageReactionCluster({
-  message,
-  userId,
-  mine,
-  isEditing,
-  pickerOpen,
-  onTogglePicker,
-  outerRef,
-  onPickReaction,
-}) {
-  if (isEditing) return null
-  const rCounts = reactionCounts(message.reactions)
-  const myReaction = message.reactions?.[userId]
-  const chipEmojis = REACTION_CHOICES.filter(emo => {
-    const n = rCounts[emo] || 0
-    if (n < 1) return false
-    if (n === 1 && myReaction === emo) return false
-    return true
-  })
-
-  return (
-    <div
-      ref={pickerOpen ? outerRef : undefined}
-      style={{
-        ...s.reactionClusterRow,
-        justifyContent: mine ? 'flex-end' : 'flex-start',
-        alignSelf: mine ? 'flex-end' : 'flex-start',
-      }}
-    >
-      {chipEmojis.map(emo => {
-        const n = rCounts[emo] || 0
-        return (
-          <div key={emo} style={s.reactionChip} title={n > 1 ? `${n} reações` : '1 reação'}>
-            <span style={s.reactionChipEmoji}>{emo}</span>
-            {n > 1 && <span style={s.reactionChipCount}>{n}</span>}
-          </div>
-        )
-      })}
-      <div style={s.reactionPickerAnchor}>
-        <button
-          type="button"
-          className="reaction-add-btn"
-          style={{
-            ...s.reactionOutlineBtn,
-            ...(myReaction ? s.reactionOutlineBtnActive : {}),
-          }}
-          aria-expanded={pickerOpen}
-          aria-haspopup="menu"
-          aria-label={myReaction ? 'Alterar ou remover reação' : 'Reagir à mensagem'}
-          onClick={onTogglePicker}
-        >
-          {myReaction ? (
-            <span style={s.reactionChosenGlyph}>{myReaction}</span>
-          ) : (
-            <span style={s.reactionOutlineGlyph}>+</span>
-          )}
-        </button>
-        {pickerOpen && (
-          <div style={s.reactionPopover} role="menu">
-            {REACTION_CHOICES.map((emo, idx) => {
-              const n = rCounts[emo] || 0
-              return (
-                <button
-                  key={emo}
-                  type="button"
-                  className="reaction-pop-item"
-                  role="menuitem"
-                  style={{
-                    ...s.reactionPopBtn,
-                    borderRight: idx < REACTION_CHOICES.length - 1 ? '1px solid rgba(255,255,255,0.1)' : 'none',
-                  }}
-                  onClick={() => void onPickReaction(message.id, emo)}
-                >
-                  <span style={s.reactionPopEmoji}>{emo}</span>
-                  {n > 0 && <span style={s.reactionPopCount}>{n}</span>}
-                </button>
-              )
-            })}
-          </div>
-        )}
-      </div>
-    </div>
-  )
 }
