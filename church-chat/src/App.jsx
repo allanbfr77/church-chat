@@ -54,6 +54,11 @@ function readAsDataURL(file) {
   })
 }
 
+/** Remove quebras de linha do texto do chat (exibição e persistência). */
+function collapseChatLineBreaks(str) {
+  return String(str ?? '').replace(/\r\n|\r|\n/g, ' ')
+}
+
 /** Mensagem apagada pelo remetente (status, boolean, texto legado ou metadados) */
 function messageIsTombstone(m) {
   if (!m) return false
@@ -229,7 +234,7 @@ export default function App() {
   const [msgActionBusy, setMsgActionBusy] = useState(null)
   const [confirmDialog, setConfirmDialog]   = useState(null)
   const bottomRef    = useRef(null)
-  const textareaRef  = useRef(null)
+  const messageInputRef = useRef(null)
   const fileRef      = useRef(null)
   const emojiPickerRef = useRef(null)
   const knownIdsRef  = useRef(null)
@@ -336,7 +341,7 @@ export default function App() {
         msgs.forEach(m => {
           if (m.uid === userIdRef.current || messageIsTombstone(m)) return
           if ((m.ts || 0) >= joinT) {
-            fireNotif((m.name || 'Alguém').toLocaleUpperCase('pt-BR'), m.text || '', m.id)
+            fireNotif((m.name || 'Alguém').toLocaleUpperCase('pt-BR'), collapseChatLineBreaks(m.text || ''), m.id)
           }
         })
       } else {
@@ -344,7 +349,7 @@ export default function App() {
           if (!knownIdsRef.current.has(m.id)) {
             knownIdsRef.current.add(m.id)
             if (m.uid !== userIdRef.current && !messageIsTombstone(m)) {
-              fireNotif((m.name || 'Alguém').toLocaleUpperCase('pt-BR'), m.text || '', m.id)
+              fireNotif((m.name || 'Alguém').toLocaleUpperCase('pt-BR'), collapseChatLineBreaks(m.text || ''), m.id)
             }
           }
         })
@@ -379,15 +384,15 @@ export default function App() {
   }, [showEmojiPicker])
 
   const insertEmoji = emoji => {
-    const el = textareaRef.current
+    const el = messageInputRef.current
     if (!el) {
-      setInput(prev => prev + emoji)
+      setInput(prev => collapseChatLineBreaks(prev + emoji))
       setShowEmojiPicker(false)
       return
     }
     const start = el.selectionStart ?? input.length
     const end = el.selectionEnd ?? input.length
-    const next = input.slice(0, start) + emoji + input.slice(end)
+    const next = collapseChatLineBreaks(input.slice(0, start) + emoji + input.slice(end))
     setInput(next)
     setShowEmojiPicker(false)
     requestAnimationFrame(() => {
@@ -405,14 +410,14 @@ export default function App() {
       const msgRef = await push(dbRef(db, 'messages'), {
         uid: userId,
         name,
-        text: input.trim(),
+        text: collapseChatLineBreaks(input).trim(),
         ts: Date.now(),
         file: pendingFile || null,
       })
       setSentIds(prev => new Set([...prev, msgRef.key]))
       setInput('')
       setPendingFile(null)
-      textareaRef.current?.focus()
+      messageInputRef.current?.focus()
     } catch (err) {
       console.error(err)
       setFileError('Erro ao enviar. Tente novamente.')
@@ -449,7 +454,7 @@ export default function App() {
   const startEdit = m => {
     if (m.uid !== userId || messageIsTombstone(m) || m.editedOnce) return
     setEditingId(m.id)
-    setEditDraft(m.text || '')
+    setEditDraft(collapseChatLineBreaks(m.text || ''))
   }
 
   const cancelEdit = () => {
@@ -464,7 +469,7 @@ export default function App() {
       cancelEdit()
       return
     }
-    const nextText = editDraft.trim()
+    const nextText = collapseChatLineBreaks(editDraft).trim()
     if (!nextText && !msg.file) {
       setFileError('A mensagem não pode ficar vazia. Use apagar se quiser remover.')
       return
@@ -703,18 +708,15 @@ export default function App() {
               return (
                 <div
                   key={m.id}
-                  style={{
-                    ...s.row,
-                    justifyContent: mine ? 'flex-end' : 'flex-start',
-                  }}
+                  className={`chatMsgRow ${mine ? 'chatMsgRow--sent' : 'chatMsgRow--recv'}`}
                 >
-                  <div style={mine ? s.msgRowOuterMine : s.msgRowOuterPeer}>
+                  <div className="chatMsgGroup">
                     {!mine && (
-                      <div style={s.peerAvatarCol}>
+                      <div className="chatMsgAvatarSlot">
                         {showName ? (
                           <div
+                            className="chatMsgAvatar"
                             style={{
-                              ...s.peerAvatar,
                               color: peerColor,
                               borderColor: `${peerColor}55`,
                               background: `${peerColor}18`,
@@ -725,47 +727,37 @@ export default function App() {
                             {nameInitial(m.name)}
                           </div>
                         ) : (
-                          <div style={s.peerAvatarSpacer} aria-hidden />
+                          <div className="chatMsgAvatarSpacer" aria-hidden />
                         )}
                       </div>
                     )}
-                  <div style={s.msgRowWithReaction}>
-                    <div className="bubble-wrap" style={{ flexShrink: 0 }}>
-                    {showName && (
+                    <div className={`chatMsgStack ${mine ? 'chatMsgStack--sent' : 'chatMsgStack--recv'}`}>
+                      {showName && !mine && (
+                        <div className="chatMsgAuthor" style={{ color: userColor(m.name || '') }}>
+                          {m.name}
+                        </div>
+                      )}
                       <div
-                        style={{
-                          ...s.senderName,
-                          ...(mine ? {} : s.senderNamePeer),
-                          color: userColor(m.name || ''),
-                        }}
+                        className={`chatMsgBubble ${mine ? 'chatMsgBubble--sent' : 'chatMsgBubble--recv'}`}
+                        style={!mine && peerColor ? { ['--chat-accent']: peerColor } : undefined}
                       >
-                        {m.name}
-                      </div>
-                    )}
-                    <div
-                      style={
-                        mine
-                          ? s.bubbleMine
-                          : { ...s.bubbleOther, borderLeft: `4px solid ${peerColor}` }
-                      }
-                    >
-                      <div style={s.bubbleTopRow}>
-                        <div style={s.bubbleBody}>
+                        <div className="chatMsgBody">
                           {isEditing ? (
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                            <div className="chatMsgEditWrap">
                               {m.file && <FilePreview file={m.file} mine={mine} />}
-                              <textarea
-                                style={{ ...s.editMsgTextarea, minHeight: 72 }}
+                              <input
+                                type="text"
+                                className="chat-msg-input chatMsgEditInput"
+                                style={s.editMsgInput}
                                 value={editDraft}
-                                onChange={e => setEditDraft(e.target.value)}
+                                onChange={e => setEditDraft(collapseChatLineBreaks(e.target.value))}
                                 onKeyDown={e => {
-                                  if (e.key === 'Enter' && !e.shiftKey) {
+                                  if (e.key === 'Enter') {
                                     e.preventDefault()
                                     saveEdit()
                                   }
                                 }}
                                 autoFocus
-                                rows={3}
                               />
                               <div style={s.editActions}>
                                 <button type="button" style={s.editSaveBtn} onClick={saveEdit} disabled={busy}>
@@ -779,48 +771,48 @@ export default function App() {
                           ) : (
                             <>
                               {m.file && <FilePreview file={m.file} mine={mine} />}
-                              {m.text && <div style={s.msgText}>{m.text}</div>}
-                              {m.editedOnce && (
-                                <div style={s.msgEditedHint}>editada</div>
+                              {m.text && (
+                                <div className="chatMsgText">{collapseChatLineBreaks(m.text)}</div>
                               )}
+                              {m.editedOnce && <div className="chatMsgEdited">editada</div>}
                             </>
                           )}
                         </div>
-                        <div style={s.bubbleMetaInline}>
-                          <span style={s.msgTime}>{timeStr(m.ts)}</span>
-                          {mine && (
-                            <span className={sent ? 'check-on' : 'check-off'} style={s.check}>✓</span>
-                          )}
-                        </div>
+                        {!isEditing && (
+                          <div className="chatMsgMeta">
+                            <span>{timeStr(m.ts)}</span>
+                            {mine && (
+                              <span className={sent ? 'check-on chatMsgCheck' : 'check-off chatMsgCheck'}>✓</span>
+                            )}
+                          </div>
+                        )}
                       </div>
-                    </div>
-                    {mine && !isEditing && (
-                      <div style={s.msgActions}>
-                        {canEditMine && (
+                      {mine && !isEditing && (
+                        <div className="chatMsgActions">
+                          {canEditMine && (
+                            <button
+                              type="button"
+                              style={s.msgActionBtn}
+                              disabled={busy}
+                              onClick={() => startEdit(m)}
+                              title="Você pode editar só uma vez"
+                            >
+                              Editar
+                            </button>
+                          )}
                           <button
                             type="button"
-                            style={s.msgActionBtn}
+                            style={{ ...s.msgActionBtn, color: 'rgba(248,113,113,0.85)' }}
                             disabled={busy}
-                            onClick={() => startEdit(m)}
-                            title="Você pode editar só uma vez"
+                            onClick={() => softDeleteMessage(m.id)}
+                            title="Apagar para todos"
                           >
-                            Editar
+                            {busy ? '…' : 'Apagar'}
                           </button>
-                        )}
-                        <button
-                          type="button"
-                          style={{ ...s.msgActionBtn, color: 'rgba(248,113,113,0.85)' }}
-                          disabled={busy}
-                          onClick={() => softDeleteMessage(m.id)}
-                          title="Apagar para todos"
-                        >
-                          {busy ? '…' : 'Apagar'}
-                        </button>
-                      </div>
-                    )}
+                        </div>
+                      )}
+                    </div>
                   </div>
-                  </div>
-                </div>
                 </div>
               )
             })}
@@ -889,13 +881,15 @@ export default function App() {
               {reading ? '⏳' : '📎'}
             </button>
             <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={handleFileChange} />
-            <textarea
-              ref={textareaRef} style={s.textarea}
+            <input
+              type="text"
+              ref={messageInputRef}
+              className="chat-msg-input"
+              style={s.chatMsgInput}
               placeholder={pendingFile ? 'Adicione uma legenda...' : 'Mensagem...'}
               value={input}
-              onChange={e => setInput(e.target.value)}
+              onChange={e => setInput(collapseChatLineBreaks(e.target.value))}
               onKeyDown={handleKey}
-              rows={1}
             />
             <button
               style={{ ...s.sendBtn, opacity: canSend ? 1 : 0.3 }}
@@ -920,7 +914,172 @@ const css = `
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: rgba(212,175,55,0.2); border-radius: 2px; }
   ::-webkit-scrollbar-thumb:hover { background: rgba(212,175,55,0.4); }
-  .bubble-wrap { width: fit-content; max-width: min(78vw, 520px); min-width: min(100%, 120px); }
+  /* ── Mensagens do chat ── */
+
+  /* Linha: empurra bolha para esquerda ou direita */
+  .chatMsgRow {
+    display: flex;
+    width: 100%;
+    padding: 1px 0;
+  }
+  .chatMsgRow--sent { justify-content: flex-end; }
+  .chatMsgRow--recv { justify-content: flex-start; }
+
+  /* Grupo: avatar + coluna de conteúdo. max-width fica AQUI. */
+  .chatMsgGroup {
+    display: flex;
+    flex-direction: row;
+    align-items: flex-end;
+    gap: 10px;
+    max-width: min(78vw, 560px);
+  }
+
+  /* Slot do avatar */
+  .chatMsgAvatarSlot {
+    width: 38px;
+    flex-shrink: 0;
+    display: flex;
+    justify-content: center;
+    align-items: flex-end;
+    padding-bottom: 2px;
+  }
+  .chatMsgAvatar {
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    font-weight: 800;
+    font-family: inherit;
+    border: 2px solid;
+    flex-shrink: 0;
+  }
+  .chatMsgAvatarSpacer {
+    width: 34px;
+    height: 34px;
+    flex-shrink: 0;
+  }
+
+  /* Coluna: nome do autor + bolha + ações */
+  .chatMsgStack {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+    /* sem max-width aqui — herdado do chatMsgGroup */
+  }
+  .chatMsgStack--sent { align-items: flex-end; }
+  .chatMsgStack--recv { align-items: flex-start; }
+
+  /* Nome do remetente */
+  .chatMsgAuthor {
+    font-size: 14px;
+    font-weight: 700;
+    padding-left: 2px;
+    margin-bottom: 2px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  /*
+   * Bolha: cresce com o conteúdo, nunca além do container.
+   * inline-block + align-items(start|end) no pai = shrink-to-fit automático.
+   * min-width garante espaço mínimo para o horário.
+   */
+  .chatMsgBubble {
+    display: inline-block;
+    max-width: 100%;
+    min-width: 72px;
+    box-sizing: border-box;
+    padding: 9px 12px 8px;
+  }
+  .chatMsgBubble--sent {
+    background: linear-gradient(135deg, #2a1f00, #3d2d00);
+    border: 1px solid rgba(212,175,55,0.35);
+    border-radius: 18px 18px 4px 18px;
+  }
+  .chatMsgBubble--recv {
+    background: #0d0d0d;
+    border: 1px solid rgba(255,255,255,0.07);
+    border-left: 4px solid var(--chat-accent, rgba(212,175,55,0.45));
+    border-radius: 18px 18px 18px 4px;
+  }
+
+  /* Área de conteúdo (texto + arquivo) */
+  .chatMsgBody {
+    font-size: 15px;
+    line-height: 1.5;
+    color: #fff;
+  }
+  .chatMsgText {
+    font-size: 15px;
+    line-height: 1.5;
+    color: #fff;
+    white-space: normal;
+    word-break: normal;       /* não quebra palavras normais no meio */
+    overflow-wrap: anywhere;  /* quebra URLs e strings sem espaço */
+  }
+  .chatMsgEdited {
+    font-size: 10px;
+    color: rgba(212,175,55,0.45);
+    margin-top: 4px;
+    font-weight: 500;
+  }
+
+  /*
+   * Meta (horário + check): ocupa a largura da bolha mas NÃO a infla.
+   * Técnica: width:0 faz o elemento contribuir zero para o cálculo
+   * de largura intrínseca do pai; min-width:100% resolve depois que
+   * a largura do pai já foi determinada pelo texto.
+   * Resultado: bolha = largura do texto, horário alinhado à direita.
+   */
+  .chatMsgMeta {
+    display: flex;
+    flex-direction: row;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 6px;
+    margin-top: 6px;
+    font-size: 10px;
+    color: rgba(255,255,255,0.32);
+    line-height: 1.2;
+    white-space: nowrap;
+    width: 0;
+    min-width: 100%;
+  }
+  .chatMsgCheck {
+    font-size: 13px;
+    font-weight: 700;
+    color: #D4AF37;
+    line-height: 1;
+  }
+
+  /* Ações (editar / apagar) */
+  .chatMsgActions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 4px;
+  }
+
+  /* Modo de edição */
+  .chatMsgEditWrap {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: min(100%, 260px);
+  }
+  .chatMsgEditInput {
+    width: 100%;
+  }
+
+  @media (min-width: 700px) {
+    .chatMsgGroup { max-width: min(70%, 560px); }
+  }
+
   .check-on  { opacity: 1; animation: popIn .35s cubic-bezier(.34,1.56,.64,1) forwards; }
   .check-off { opacity: 0; }
   @keyframes popIn {
@@ -928,14 +1087,10 @@ const css = `
     70%  { transform: scale(1.25); }
     100% { transform: scale(1); opacity: 1; }
   }
-  @media (min-width: 700px) {
-    .bubble-wrap { max-width: min(65%, 480px) !important; min-width: min(100%, 120px) !important; }
-  }
-  textarea { field-sizing: content; min-height: 40px; max-height: 140px; overflow-y: auto; }
   input::placeholder { color: rgba(212,175,55,0.35); }
-  textarea::placeholder { color: rgba(255,255,255,0.25); }
+  .chat-msg-input::placeholder { color: rgba(255,255,255,0.25); }
   input:focus { border-color: rgba(212,175,55,0.6) !important; box-shadow: 0 0 0 3px rgba(212,175,55,0.08); }
-  textarea:focus { border-color: rgba(212,175,55,0.5) !important; }
+  .chat-msg-input:focus { border-color: rgba(212,175,55,0.5) !important; }
   button, [role="button"] {
     -webkit-tap-highlight-color: transparent;
     touch-action: manipulation;
@@ -1012,7 +1167,6 @@ const s = {
       '16px calc(14px + env(safe-area-inset-right, 0px)) 10px calc(14px + env(safe-area-inset-left, 0px))',
   },
   empty: { textAlign: 'center', color: 'rgba(212,175,55,0.2)', marginTop: 80, fontSize: 14 },
-  row: { display: 'flex', marginBottom: 2 },
   rowSystem: {
     display: 'flex', justifyContent: 'center', width: '100%', marginBottom: 12, marginTop: 4, padding: '0 12px',
   },
@@ -1037,75 +1191,14 @@ const s = {
     fontSize: 10, color: 'rgba(148,163,184,0.55)', letterSpacing: '0.03em',
     textTransform: 'uppercase',
   },
-  senderName: {
-    fontSize: 14, fontWeight: 700, paddingLeft: 12, marginBottom: 3,
-    letterSpacing: '0.06em', textTransform: 'uppercase',
-  },
-  senderNamePeer: { paddingLeft: 2 },
-  msgRowOuterMine: {
-    display: 'inline-flex', flexDirection: 'row', alignItems: 'flex-end', gap: 8,
-    maxWidth: 'min(100%, 520px)', position: 'relative',
-  },
-  msgRowOuterPeer: {
-    display: 'inline-flex', flexDirection: 'row', alignItems: 'flex-end', gap: 10,
-    maxWidth: 'min(100%, 520px)', position: 'relative',
-  },
-  peerAvatarCol: {
-    width: 38, flexShrink: 0, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end',
-    alignItems: 'center', paddingBottom: 2,
-  },
-  peerAvatar: {
-    width: 34, height: 34, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center',
-    fontSize: 14, fontWeight: 800, fontFamily: 'inherit', border: '2px solid', flexShrink: 0,
-  },
-  peerAvatarSpacer: { width: 34, height: 34, flexShrink: 0 },
-
-  // Bubbles
-  bubbleMine: {
-    background: `linear-gradient(135deg, #2a1f00, #3d2d00)`,
-    border: `1px solid rgba(212,175,55,0.35)`,
-    borderRadius: '18px 18px 4px 18px', padding: '8px 11px',
-    display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: 0,
-    boxSizing: 'border-box',
-    width: 'fit-content', maxWidth: '100%', minWidth: 'min(100%, 120px)',
-  },
-  bubbleOther: {
-    background: '#0d0d0d', border: `1px solid rgba(255,255,255,0.07)`,
-    borderRadius: '18px 18px 18px 4px', padding: '8px 11px',
-    display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: 0,
-    boxSizing: 'border-box',
-    width: 'fit-content', maxWidth: '100%', minWidth: 'min(100%, 120px)',
-  },
-  bubbleBody: { width: '100%', minWidth: 0 },
-  bubbleTopRow: {
-    display: 'flex', flexDirection: 'row', alignItems: 'flex-end', gap: 10,
-    width: '100%', minWidth: 0,
-  },
-  bubbleMetaInline: {
-    display: 'flex', flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end',
-    gap: 5, flexShrink: 0, alignSelf: 'flex-end', paddingBottom: 1, marginLeft: 4,
-  },
-  msgText: {
-    fontSize: 15, lineHeight: 1.5, color: '#fff',
-    whiteSpace: 'pre-wrap', overflowWrap: 'break-word', wordBreak: 'normal',
-  },
-  msgEditedHint: { fontSize: 10, color: 'rgba(212,175,55,0.45)', marginTop: 4, fontWeight: 500 },
-  msgRowWithReaction: {
-    display: 'inline-flex', flexDirection: 'row', alignItems: 'flex-end', gap: 8,
-    position: 'relative', flex: '1 1 auto', minWidth: 0,
-  },
-  msgActions: {
-    display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 6,
-    paddingRight: 14, paddingLeft: 4, boxSizing: 'border-box', width: '100%',
-  },
   msgActionBtn: {
     background: 'none', border: 'none', color: 'rgba(212,175,55,0.55)', fontSize: 11,
     fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', padding: '2px 4px', textDecoration: 'underline',
   },
-  editMsgTextarea: {
+  editMsgInput: {
     width: '100%', background: 'rgba(0,0,0,0.35)', border: `1px solid ${GOLD_DIM}`, borderRadius: 10,
-    padding: '8px 10px', color: '#fff', fontSize: 14, fontFamily: 'inherit', outline: 'none', resize: 'vertical',
-    lineHeight: 1.45,
+    padding: '8px 10px', color: '#fff', fontSize: 14, fontFamily: 'inherit', outline: 'none',
+    lineHeight: 1.45, boxSizing: 'border-box',
   },
   editActions: { display: 'flex', gap: 8, flexWrap: 'wrap' },
   editSaveBtn: {
@@ -1117,8 +1210,6 @@ const s = {
     borderRadius: 8, padding: '6px 14px', color: 'rgba(255,255,255,0.55)', fontSize: 12, fontWeight: 600,
     cursor: 'pointer', fontFamily: 'inherit',
   },
-  msgTime: { fontSize: 10, color: 'rgba(255,255,255,0.32)', whiteSpace: 'nowrap', lineHeight: 1.2 },
-  check: { fontSize: 13, color: GOLD, fontWeight: 700, lineHeight: 1 },
 
   // Pending / errors
   pendingBar: {
@@ -1147,7 +1238,7 @@ const s = {
     borderTopRightRadius: 20,
     background: 'rgba(14,14,18,0.78)',
     boxShadow: '0 -10px 40px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.04)',
-    flexShrink: 0, alignItems: 'flex-end',
+    flexShrink: 0, alignItems: 'center',
   },
   attachBtn: {
     width: 42, height: 42, borderRadius: 12, background: GOLD_FAINT, border: `1px solid ${GOLD_DIM}`,
@@ -1166,10 +1257,11 @@ const s = {
     background: 'rgba(255,255,255,0.04)', border: '1px solid transparent', borderRadius: 8,
     cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
   },
-  textarea: {
-    flex: 1, background: '#0d0d0d', border: `1.5px solid rgba(255,255,255,0.08)`,
+  chatMsgInput: {
+    flex: 1, minWidth: 0, background: '#0d0d0d', border: `1.5px solid rgba(255,255,255,0.08)`,
     borderRadius: 12, padding: '10px 14px', color: '#fff', fontSize: 15,
-    fontFamily: 'inherit', outline: 'none', resize: 'none', lineHeight: 1.5, transition: 'border-color .2s',
+    fontFamily: 'inherit', outline: 'none', lineHeight: 1.5, transition: 'border-color .2s',
+    boxSizing: 'border-box',
   },
   sendBtn: {
     width: 42, height: 42, borderRadius: 12,
