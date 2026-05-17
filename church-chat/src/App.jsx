@@ -12,7 +12,7 @@ import {
   limitToLast,
 } from 'firebase/database'
 
-const ADMIN_CODE = 'invb@admin'
+const ADMIN_CODE = 'invb'
 
 /** Texto gravado no RTDB quando a mensagem é apagada (e exibido no chat) */
 const MSG_APAGADA_FRASE = 'Esta mensagem foi apagada'
@@ -232,26 +232,26 @@ function FilePreview({ file, mine }) {
             role="dialog"
             aria-modal="true"
             aria-label="Imagem em tamanho grande"
+            onClick={() => setFullOpen(false)}
             style={{
               position: 'fixed',
               inset: 0,
               zIndex: 400,
               background: 'rgba(0,0,0,0.93)',
               display: 'flex',
+              flexDirection: 'column',
               alignItems: 'center',
               justifyContent: 'center',
+              cursor: 'pointer',
+              WebkitTapHighlightColor: 'transparent',
               padding:
                 'max(12px, env(safe-area-inset-top, 0px)) max(12px, env(safe-area-inset-right, 0px)) max(12px, env(safe-area-inset-bottom, 0px)) max(12px, env(safe-area-inset-left, 0px))',
             }}
-            onClick={() => setFullOpen(false)}
           >
             <button
               type="button"
-              aria-label="Fechar"
-              onClick={e => {
-                e.stopPropagation()
-                setFullOpen(false)
-              }}
+              aria-label="Voltar ao chat"
+              onClick={() => setFullOpen(false)}
               style={{
                 position: 'fixed',
                 top: 'max(10px, env(safe-area-inset-top, 0px))',
@@ -275,7 +275,6 @@ function FilePreview({ file, mine }) {
               ✕
             </button>
             <div
-              onClick={e => e.stopPropagation()}
               style={{
                 flex: '1 1 auto',
                 display: 'flex',
@@ -284,24 +283,47 @@ function FilePreview({ file, mine }) {
                 minWidth: 0,
                 minHeight: 0,
                 width: '100%',
-                height: '100%',
                 maxHeight: '100%',
+                pointerEvents: 'none',
               }}
             >
               <img
                 src={src}
                 alt={file.name || 'Imagem enviada no chat'}
+                draggable={false}
                 style={{
                   maxWidth: '100%',
-                  maxHeight: 'min(92dvh, calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 56px))',
+                  maxHeight: 'min(85dvh, calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 80px))',
                   width: 'auto',
                   height: 'auto',
                   objectFit: 'contain',
                   borderRadius: 4,
                   boxShadow: '0 12px 48px rgba(0,0,0,0.65)',
+                  pointerEvents: 'none',
+                  userSelect: 'none',
                 }}
               />
             </div>
+            <p
+              style={{
+                position: 'fixed',
+                bottom: 'max(16px, env(safe-area-inset-bottom, 0px))',
+                left: '50%',
+                transform: 'translateX(-50%)',
+                margin: 0,
+                padding: '8px 16px',
+                borderRadius: 20,
+                background: 'rgba(0,0,0,0.5)',
+                border: '1px solid rgba(255,255,255,0.2)',
+                color: 'rgba(255,255,255,0.85)',
+                fontSize: 13,
+                fontWeight: 500,
+                pointerEvents: 'none',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              Toque para voltar ao chat
+            </p>
           </div>
         )}
       </>
