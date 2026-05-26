@@ -10,9 +10,28 @@ import {
   onDisconnect,
   query,
   limitToLast,
+  runTransaction,
 } from 'firebase/database'
 
 const ADMIN_CODE = 'invb'
+const DAILY_RESET_TIME_ZONE = 'America/Sao_Paulo'
+const DAILY_RESET_LOCK_MS = 2 * 60 * 1000
+const DAILY_RESET_RETRY_MS = 15 * 1000
+
+const DAILY_RESET_DAY_FORMATTER = new Intl.DateTimeFormat('en-CA', {
+  timeZone: DAILY_RESET_TIME_ZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+})
+
+function dailyResetDayKey(ts = Date.now()) {
+  const parts = DAILY_RESET_DAY_FORMATTER.formatToParts(new Date(ts))
+  const year = parts.find(part => part.type === 'year')?.value ?? '0000'
+  const month = parts.find(part => part.type === 'month')?.value ?? '00'
+  const day = parts.find(part => part.type === 'day')?.value ?? '00'
+  return `${year}-${month}-${day}`
+}
 
 /** Texto gravado no RTDB quando a mensagem é apagada (e exibido no chat) */
 const MSG_APAGADA_FRASE = 'Esta mensagem foi apagada'
@@ -439,6 +458,9 @@ export default function App() {
   nameRef.current = name
   const typingTimersRef = useRef({ idle: null, trailing: null })
   const lastTypingWriteRef = useRef(0)
+  const serverTimeOffsetRef = useRef(0)
+  const lastDailyResetSuccessRef = useRef(null)
+  const lastDailyResetAttemptRef = useRef({ dayKey: null, at: 0 })
 
   // ── Notificações ──
   const requestNotifPermission = async () => {
@@ -464,6 +486,15 @@ export default function App() {
     }
     window.addEventListener('beforeinstallprompt', onBeforeInstall)
     return () => window.removeEventListener('beforeinstallprompt', onBeforeInstall)
+  }, [])
+
+  useEffect(() => {
+    const offsetRef = dbRef(db, '.info/serverTimeOffset')
+    const unsub = onValue(offsetRef, snap => {
+      const offset = Number(snap.val())
+      serverTimeOffsetRef.current = Number.isFinite(offset) ? offset : 0
+    })
+    return () => unsub()
   }, [])
 
   // Notificações: no Android o caminho via Service Worker (showNotification) é o mais fiável.
@@ -594,12 +625,94 @@ export default function App() {
     knownIdsRef.current = null
   }
 
+  const getApproxServerNow = () => Date.now() + (Number(serverTimeOffsetRef.current) || 0)
+
+  const ensureDailyChatReset = async () => {
+    const now = getApproxServerNow()
+    const dayKey = dailyResetDayKey(now)
+    if (lastDailyResetSuccessRef.current === dayKey) return
+
+    const lastAttempt = lastDailyResetAttemptRef.current
+    if (lastAttempt.dayKey === dayKey && now - lastAttempt.at < DAILY_RESET_RETRY_MS) return
+    lastDailyResetAttemptRef.current = { dayKey, at: now }
+
+    const resetMetaRef = dbRef(db, 'system/dailyReset')
+    try {
+      const tx = await runTransaction(resetMetaRef, current => {
+        const sameDay = current?.dayKey === dayKey
+        const alreadyDone = sameDay && current?.status === 'done'
+        const runningFresh =
+          sameDay &&
+          current?.status === 'running' &&
+          typeof current.startedAt === 'number' &&
+          now - current.startedAt < DAILY_RESET_LOCK_MS
+
+        if (alreadyDone || runningFresh) return
+        return {
+          dayKey,
+          status: 'running',
+          startedAt: now,
+          startedBy: userIdRef.current || 'system',
+        }
+      }, { applyLocally: false })
+
+      const meta = tx.snapshot?.val()
+      if (!tx.committed) {
+        if (meta?.dayKey === dayKey && meta?.status === 'done') {
+          lastDailyResetSuccessRef.current = dayKey
+          setMessages([])
+          setTypingSnap(null)
+          setTypingUsers([])
+          setSentIds(new Set())
+          knownIdsRef.current = null
+        }
+        return
+      }
+
+      await update(dbRef(db), {
+        messages: null,
+        typing: null,
+        'system/dailyReset': {
+          dayKey,
+          status: 'done',
+          resetAt: getApproxServerNow(),
+          resetBy: userIdRef.current || 'system',
+        },
+      })
+
+      lastDailyResetSuccessRef.current = dayKey
+      setMessages([])
+      setTypingSnap(null)
+      setTypingUsers([])
+      setSentIds(new Set())
+      knownIdsRef.current = null
+    } catch (err) {
+      console.error('Falha ao zerar o chat automaticamente.', err)
+      await set(resetMetaRef, {
+        dayKey,
+        status: 'error',
+        failedAt: getApproxServerNow(),
+        failedBy: userIdRef.current || 'system',
+      }).catch(() => {})
+    }
+  }
+
   // Re-checa permissão quando o usuário volta para a aba (após mudar nas config do Chrome)
   useEffect(() => {
-    if (typeof Notification === 'undefined') return
-    const check = () => setNotifPerm(Notification.permission)
+    const check = () => {
+      if (typeof Notification !== 'undefined') setNotifPerm(Notification.permission)
+      if (document.visibilityState === 'visible') void ensureDailyChatReset()
+    }
     document.addEventListener('visibilitychange', check)
     return () => document.removeEventListener('visibilitychange', check)
+  }, [])
+
+  useEffect(() => {
+    void ensureDailyChatReset()
+    const intervalId = window.setInterval(() => {
+      void ensureDailyChatReset()
+    }, 30 * 1000)
+    return () => window.clearInterval(intervalId)
   }, [])
 
   // Listen for messages in real time
