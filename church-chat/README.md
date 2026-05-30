@@ -86,11 +86,22 @@ Após testar, troque as regras do **Realtime Database** e **Storage** para:
   "rules": {
     "messages": {
       ".read": true,
+      ".write": true,
+      ".indexOn": ["ts"]
+    },
+    "typing": {
+      ".read": true,
+      ".write": true
+    },
+    "system": {
+      ".read": true,
       ".write": true
     }
   }
 }
 ```
+
+> O índice em `ts` permite filtrar mensagens do dia atual na query (`orderByChild('ts')`) sem baixar o histórico completo. Sem ele, o app usa fallback com filtro local.
 
 **Storage → Regras:**
 ```

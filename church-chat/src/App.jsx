@@ -10,6 +10,8 @@ import {
   onDisconnect,
   query,
   limitToLast,
+  orderByChild,
+  startAt,
   runTransaction,
 } from 'firebase/database'
 
@@ -31,6 +33,18 @@ function dailyResetDayKey(ts = Date.now()) {
   const month = parts.find(part => part.type === 'month')?.value ?? '00'
   const day = parts.find(part => part.type === 'day')?.value ?? '00'
   return `${year}-${month}-${day}`
+}
+
+/** 00:00 do dia civil atual em DAILY_RESET_TIME_ZONE (ms UTC). */
+function startOfResetDay(ts = Date.now()) {
+  const dayKey = dailyResetDayKey(ts)
+  const [year, month, day] = dayKey.split('-').map(Number)
+  // America/Sao_Paulo: UTC−3 (sem horário de verão desde 2019)
+  return Date.UTC(year, month - 1, day, 3, 0, 0, 0)
+}
+
+function filterMessagesFromToday(msgs, todayStartTs) {
+  return msgs.filter(m => (m.ts || 0) >= todayStartTs)
 }
 
 /** Texto gravado no RTDB quando a mensagem é apagada (e exibido no chat) */
@@ -169,6 +183,16 @@ function saveSession(userId, name, isAdmin = false) {
 }
 function clearSession() {
   try { localStorage.removeItem('cruch_session') } catch {}
+}
+
+const DAILY_RESET_CACHE_KEY = 'cruch_daily_reset_day'
+
+function getCachedDailyResetDay() {
+  try { return localStorage.getItem(DAILY_RESET_CACHE_KEY) } catch { return null }
+}
+
+function cacheDailyResetDay(dayKey) {
+  try { localStorage.setItem(DAILY_RESET_CACHE_KEY, dayKey) } catch {}
 }
 
 // ── File Preview ──────────────────────────────────────────────
@@ -422,6 +446,7 @@ export default function App() {
   const [name, setName]               = useState(stored?.name || '')
   const [joined, setJoined]           = useState(!!stored?.name)
   const [messages, setMessages]       = useState([])
+  const [messagesReady, setMessagesReady] = useState(false)
   const [input, setInput]             = useState('')
   const [onlineUsers, setOnlineUsers] = useState([])
   const [showOnline, setShowOnline]   = useState(false)
@@ -455,12 +480,18 @@ export default function App() {
   const joinTimeRef  = useRef(Date.now())
   const userIdRef    = useRef(userId)
   const nameRef      = useRef(name)
+  const joinedRef    = useRef(joined)
   nameRef.current = name
+  joinedRef.current = joined
   const typingTimersRef = useRef({ idle: null, trailing: null })
   const lastTypingWriteRef = useRef(0)
   const serverTimeOffsetRef = useRef(0)
-  const lastDailyResetSuccessRef = useRef(null)
+  const lastDailyResetSuccessRef = useRef(
+    getCachedDailyResetDay() === dailyResetDayKey() ? getCachedDailyResetDay() : null,
+  )
   const lastDailyResetAttemptRef = useRef({ dayKey: null, at: 0 })
+  const messagesListenerGenRef = useRef(0)
+  const messagesScrollInitRef = useRef(false)
 
   // ── Notificações ──
   const requestNotifPermission = async () => {
@@ -610,6 +641,9 @@ export default function App() {
     saveSession(userId, name.trim(), admin)
     setIsAdmin(admin)
     joinTimeRef.current = Date.now()
+    knownIdsRef.current = messages.length > 0
+      ? new Set(messages.map(m => m.id))
+      : null
     setJoined(true)
   }
 
@@ -627,10 +661,40 @@ export default function App() {
 
   const getApproxServerNow = () => Date.now() + (Number(serverTimeOffsetRef.current) || 0)
 
+  const runDailyResetDeletion = (dayKey, resetMetaRef) => {
+    void update(dbRef(db), {
+      messages: null,
+      typing: null,
+      'system/dailyReset': {
+        dayKey,
+        status: 'done',
+        resetAt: getApproxServerNow(),
+        resetBy: userIdRef.current || 'system',
+      },
+    })
+      .then(() => {
+        lastDailyResetSuccessRef.current = dayKey
+        cacheDailyResetDay(dayKey)
+      })
+      .catch(err => {
+        console.error('Falha ao zerar o chat automaticamente.', err)
+        void set(resetMetaRef, {
+          dayKey,
+          status: 'error',
+          failedAt: getApproxServerNow(),
+          failedBy: userIdRef.current || 'system',
+        }).catch(() => {})
+      })
+  }
+
   const ensureDailyChatReset = async () => {
     const now = getApproxServerNow()
     const dayKey = dailyResetDayKey(now)
     if (lastDailyResetSuccessRef.current === dayKey) return
+    if (getCachedDailyResetDay() === dayKey) {
+      lastDailyResetSuccessRef.current = dayKey
+      return
+    }
 
     const lastAttempt = lastDailyResetAttemptRef.current
     if (lastAttempt.dayKey === dayKey && now - lastAttempt.at < DAILY_RESET_RETRY_MS) return
@@ -660,34 +724,15 @@ export default function App() {
       if (!tx.committed) {
         if (meta?.dayKey === dayKey && meta?.status === 'done') {
           lastDailyResetSuccessRef.current = dayKey
-          setMessages([])
-          setTypingSnap(null)
-          setTypingUsers([])
-          setSentIds(new Set())
-          knownIdsRef.current = null
+          cacheDailyResetDay(dayKey)
         }
         return
       }
 
-      await update(dbRef(db), {
-        messages: null,
-        typing: null,
-        'system/dailyReset': {
-          dayKey,
-          status: 'done',
-          resetAt: getApproxServerNow(),
-          resetBy: userIdRef.current || 'system',
-        },
-      })
-
-      lastDailyResetSuccessRef.current = dayKey
-      setMessages([])
-      setTypingSnap(null)
-      setTypingUsers([])
-      setSentIds(new Set())
-      knownIdsRef.current = null
+      // DELETE físico em background — a UI já filtra por ts >= meia-noite de hoje
+      runDailyResetDeletion(dayKey, resetMetaRef)
     } catch (err) {
-      console.error('Falha ao zerar o chat automaticamente.', err)
+      console.error('Falha ao coordenar reset diário do chat.', err)
       await set(resetMetaRef, {
         dayKey,
         status: 'error',
@@ -697,53 +742,79 @@ export default function App() {
     }
   }
 
+  // Meta do reset diário — evita transação desnecessária a cada reload
+  useEffect(() => {
+    const metaRef = dbRef(db, 'system/dailyReset')
+    const unsub = onValue(metaRef, snap => {
+      const meta = snap.val()
+      const dayKey = dailyResetDayKey(getApproxServerNow())
+      if (meta?.dayKey === dayKey && meta?.status === 'done') {
+        lastDailyResetSuccessRef.current = dayKey
+        cacheDailyResetDay(dayKey)
+      }
+    })
+    return () => unsub()
+  }, [])
+
   // Re-checa permissão quando o usuário volta para a aba (após mudar nas config do Chrome)
   useEffect(() => {
     const check = () => {
       if (typeof Notification !== 'undefined') setNotifPerm(Notification.permission)
-      if (document.visibilityState === 'visible') void ensureDailyChatReset()
+      if (document.visibilityState === 'visible' && joinedRef.current) {
+        window.setTimeout(() => void ensureDailyChatReset(), 2000)
+      }
     }
     document.addEventListener('visibilitychange', check)
     return () => document.removeEventListener('visibilitychange', check)
   }, [])
 
-  useEffect(() => {
-    void ensureDailyChatReset()
-    const intervalId = window.setInterval(() => {
-      void ensureDailyChatReset()
-    }, 30 * 1000)
-    return () => window.clearInterval(intervalId)
-  }, [])
-
-  // Listen for messages in real time
+  // Reset diário adiado — só após entrar na sala, sem competir com a carga inicial
   useEffect(() => {
     if (!joined) return
-    const q = query(dbRef(db, 'messages'), limitToLast(100))
-    const unsub = onValue(q, snap => {
-      const data = snap.val()
-      // Não usar Set() aqui: deixa knownIdsRef como null até o primeiro snapshot com dados.
-      // Caso contrário, um snapshot vazio seguido do histórico faz o Chrome disparar dezenas de notificações
-      // de uma vez (substituindo na bandeja) e o site pode ser silenciado ou parecer "sem notificação".
+    const deferId = window.setTimeout(() => void ensureDailyChatReset(), 2500)
+    const intervalId = window.setInterval(() => void ensureDailyChatReset(), 30 * 1000)
+    return () => {
+      window.clearTimeout(deferId)
+      window.clearInterval(intervalId)
+    }
+  }, [joined])
+
+  // Pré-carrega mensagens ao abrir o app (antes de "Entrar") para eliminar delay na entrada
+  useEffect(() => {
+    const listenerGen = ++messagesListenerGenRef.current
+    let gotSnapshot = false
+    let unsub = () => {}
+    let usingFallback = false
+
+    const applyMessageSnapshot = data => {
+      if (listenerGen !== messagesListenerGenRef.current) return
+      gotSnapshot = true
+
+      const todayStart = startOfResetDay(getApproxServerNow())
+
       if (!data) {
-        setMessages([])
-        setOnlineUsers([])
+        setMessages(prev => (prev.length === 0 ? prev : []))
+        setMessagesReady(true)
         return
       }
-      const msgs = Object.entries(data).map(([id, v]) => ({ id, ...v }))
+
+      let msgs = Object.entries(data).map(([id, v]) => ({ id, ...v }))
+      msgs = filterMessagesFromToday(msgs, todayStart)
       msgs.sort((a, b) => (a.ts || 0) - (b.ts || 0))
       const joinT = joinTimeRef.current
+      const inRoom = joinedRef.current
 
-      // Primeira carga com dados: marcar tudo como visto; notificar só mensagens de outros com ts >= entrada na sala
-      // (corrige sala vazia → primeira mensagem, que antes era tratada só como "seed" e nunca notificava)
       if (knownIdsRef.current === null) {
         knownIdsRef.current = new Set(msgs.map(m => m.id))
-        msgs.forEach(m => {
-          if (m.uid === userIdRef.current || messageIsTombstone(m)) return
-          if ((m.ts || 0) >= joinT) {
-            fireNotif((m.name || 'Alguém').toLocaleUpperCase('pt-BR'), collapseChatLineBreaks(m.text || ''), m.id)
-          }
-        })
-      } else {
+        if (inRoom) {
+          msgs.forEach(m => {
+            if (m.uid === userIdRef.current || messageIsTombstone(m)) return
+            if ((m.ts || 0) >= joinT) {
+              fireNotif((m.name || 'Alguém').toLocaleUpperCase('pt-BR'), collapseChatLineBreaks(m.text || ''), m.id)
+            }
+          })
+        }
+      } else if (inRoom) {
         msgs.forEach(m => {
           if (!knownIdsRef.current.has(m.id)) {
             knownIdsRef.current.add(m.id)
@@ -752,24 +823,80 @@ export default function App() {
             }
           }
         })
+      } else {
+        msgs.forEach(m => knownIdsRef.current.add(m.id))
       }
 
       setMessages(msgs)
-      // Build online users from recent messages (last 5 min)
-      const cutoff = Date.now() - 5 * 60 * 1000
-      const userMap = new Map()
-      msgs.filter(m => m.ts > cutoff).forEach(m => {
-        if (!userMap.has(m.uid)) userMap.set(m.uid, m.name)
-      })
-      if (!userMap.has(userId)) userMap.set(userId, name)
-      setOnlineUsers(Array.from(userMap.values()))
-    })
-    return () => unsub()
-  }, [joined, userId, name])
+      setMessagesReady(true)
+    }
+
+    const todayStart = startOfResetDay(getApproxServerNow())
+    const filteredQ = query(
+      dbRef(db, 'messages'),
+      orderByChild('ts'),
+      startAt(todayStart),
+      limitToLast(100),
+    )
+    const fallbackQ = query(
+      dbRef(db, 'messages'),
+      orderByChild('ts'),
+      limitToLast(100),
+    )
+
+    const attachListener = (q, isFallback) => {
+      return onValue(
+        q,
+        snap => applyMessageSnapshot(snap.val()),
+        err => {
+          if (!isFallback && !usingFallback) {
+            console.warn('Query filtrada por ts indisponível; usando fallback.', err)
+            usingFallback = true
+            unsub()
+            unsub = attachListener(fallbackQ, true)
+          }
+        },
+      )
+    }
+
+    unsub = attachListener(filteredQ, false)
+
+    const fallbackTimer = window.setTimeout(() => {
+      if (gotSnapshot || usingFallback) return
+      console.warn('Query filtrada demorou; usando fallback por ts.')
+      usingFallback = true
+      unsub()
+      unsub = attachListener(fallbackQ, true)
+    }, 600)
+
+    return () => {
+      window.clearTimeout(fallbackTimer)
+      messagesListenerGenRef.current += 1
+      unsub()
+    }
+  }, [userId])
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
+    if (!joined) {
+      setOnlineUsers([])
+      return
+    }
+    const cutoff = Date.now() - 5 * 60 * 1000
+    const userMap = new Map()
+    messages.filter(m => (m.ts || 0) > cutoff).forEach(m => {
+      if (!userMap.has(m.uid)) userMap.set(m.uid, m.name)
+    })
+    userMap.set(userId, name)
+    setOnlineUsers(Array.from(userMap.values()))
+  }, [joined, messages, userId, name])
+
+  useEffect(() => {
+    if (!joined) return
+    bottomRef.current?.scrollIntoView({
+      behavior: messagesScrollInitRef.current ? 'smooth' : 'auto',
+    })
+    if (messages.length > 0) messagesScrollInitRef.current = true
+  }, [messages, joined])
 
   useEffect(() => {
     if (!showEmojiPicker) return
@@ -1179,7 +1306,10 @@ export default function App() {
         <div style={s.chatPanel}>
 
           <div style={s.msgArea}>
-            {messages.length === 0 && (
+            {!messagesReady && (
+              <div style={s.empty}>Carregando mensagens…</div>
+            )}
+            {messagesReady && messages.length === 0 && (
               <div style={s.empty}>Nenhuma mensagem ainda. Diga olá! 👋</div>
             )}
             {messages.map((m, i) => {
