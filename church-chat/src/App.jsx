@@ -114,6 +114,23 @@ function isAndroidDevice() {
   return /Android/i.test(navigator.userAgent)
 }
 
+function isMobileDevice() {
+  if (typeof window === 'undefined' || typeof navigator === 'undefined') return false
+  if (isIOSDevice() || isAndroidDevice()) return true
+  return window.matchMedia?.('(pointer: coarse)').matches === true
+}
+
+const VIEWPORT_DEFAULT = 'width=device-width, initial-scale=1.0, viewport-fit=cover'
+const VIEWPORT_NO_ZOOM = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover'
+const IMAGE_ZOOM_MIN = 1
+const IMAGE_ZOOM_MAX = 5
+
+function touchDistance(touches) {
+  if (touches.length < 2) return 0
+  const [a, b] = touches
+  return Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY)
+}
+
 /** Mensagem apagada pelo remetente (status, boolean, texto legado ou metadados) */
 function messageIsTombstone(m) {
   if (!m) return false
@@ -202,14 +219,22 @@ function fileLooksLikeImage(file, src) {
   return /\.(jpe?g|png|gif|webp|avif|bmp|heic)$/i.test(String(file.name || ''))
 }
 
-function FilePreview({ file, mine }) {
-  const src = file.dataUrl || file.url
-  const [fullOpen, setFullOpen] = useState(false)
+function ChatImageLightbox({ src, fileName, onClose }) {
+  const [scale, setScale] = useState(1)
+  const [offset, setOffset] = useState({ x: 0, y: 0 })
+  const pinchRef = useRef({ dist: 0, baseScale: 1 })
+  const panRef = useRef({ active: false, x: 0, y: 0, ox: 0, oy: 0 })
+  const scaleRef = useRef(1)
+  scaleRef.current = scale
 
   useEffect(() => {
-    if (!fullOpen) return
+    setScale(1)
+    setOffset({ x: 0, y: 0 })
+  }, [src])
+
+  useEffect(() => {
     const onKey = e => {
-      if (e.key === 'Escape') setFullOpen(false)
+      if (e.key === 'Escape') onClose()
     }
     document.addEventListener('keydown', onKey)
     const prevOverflow = document.body.style.overflow
@@ -218,7 +243,177 @@ function FilePreview({ file, mine }) {
       document.removeEventListener('keydown', onKey)
       document.body.style.overflow = prevOverflow
     }
-  }, [fullOpen])
+  }, [onClose])
+
+  const handleTouchStart = e => {
+    if (e.touches.length === 2) {
+      pinchRef.current = { dist: touchDistance(e.touches), baseScale: scaleRef.current }
+    } else if (e.touches.length === 1 && scaleRef.current > 1) {
+      panRef.current = {
+        active: true,
+        x: e.touches[0].clientX,
+        y: e.touches[0].clientY,
+        ox: offset.x,
+        oy: offset.y,
+      }
+    }
+  }
+
+  const handleTouchMove = e => {
+    e.stopPropagation()
+    if (e.touches.length === 2) {
+      e.preventDefault()
+      const dist = touchDistance(e.touches)
+      if (pinchRef.current.dist > 0) {
+        const next = Math.min(
+          IMAGE_ZOOM_MAX,
+          Math.max(IMAGE_ZOOM_MIN, pinchRef.current.baseScale * (dist / pinchRef.current.dist)),
+        )
+        setScale(next)
+      }
+    } else if (panRef.current.active && e.touches.length === 1) {
+      e.preventDefault()
+      const t = e.touches[0]
+      setOffset({
+        x: panRef.current.ox + (t.clientX - panRef.current.x),
+        y: panRef.current.oy + (t.clientY - panRef.current.y),
+      })
+    }
+  }
+
+  const handleTouchEnd = () => {
+    panRef.current.active = false
+    pinchRef.current.dist = 0
+    if (scaleRef.current <= 1) {
+      setScale(1)
+      setOffset({ x: 0, y: 0 })
+    }
+  }
+
+  const handleBackdropClick = () => {
+    if (scaleRef.current <= 1) onClose()
+  }
+
+  const hint = scale > 1
+    ? 'Pinça para zoom · arraste para mover'
+    : 'Toque para voltar · pinça para ampliar'
+
+  return (
+    <div
+      className="chat-image-lightbox"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Imagem em tamanho grande"
+      onClick={handleBackdropClick}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 400,
+        background: 'rgba(0,0,0,0.93)',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        cursor: 'pointer',
+        WebkitTapHighlightColor: 'transparent',
+        padding:
+          'max(12px, env(safe-area-inset-top, 0px)) max(12px, env(safe-area-inset-right, 0px)) max(12px, env(safe-area-inset-bottom, 0px)) max(12px, env(safe-area-inset-left, 0px))',
+      }}
+    >
+      <button
+        type="button"
+        aria-label="Voltar ao chat"
+        onClick={onClose}
+        style={{
+          position: 'fixed',
+          top: 'max(10px, env(safe-area-inset-top, 0px))',
+          right: 'max(10px, env(safe-area-inset-right, 0px))',
+          zIndex: 401,
+          width: 44,
+          height: 44,
+          borderRadius: '50%',
+          border: '1px solid rgba(255,255,255,0.28)',
+          background: 'rgba(0,0,0,0.55)',
+          color: '#fff',
+          fontSize: 20,
+          cursor: 'pointer',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          lineHeight: 1,
+          fontFamily: 'inherit',
+        }}
+      >
+        ✕
+      </button>
+      <div
+        className="chat-image-lightbox-stage"
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+        onTouchCancel={handleTouchEnd}
+        onClick={e => e.stopPropagation()}
+        style={{
+          flex: '1 1 auto',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          minWidth: 0,
+          minHeight: 0,
+          width: '100%',
+          maxHeight: '100%',
+          overflow: 'hidden',
+          touchAction: 'none',
+        }}
+      >
+        <img
+          src={src}
+          alt={fileName || 'Imagem enviada no chat'}
+          draggable={false}
+          style={{
+            maxWidth: '100%',
+            maxHeight: 'min(85dvh, calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 80px))',
+            width: 'auto',
+            height: 'auto',
+            objectFit: 'contain',
+            borderRadius: 4,
+            boxShadow: '0 12px 48px rgba(0,0,0,0.65)',
+            transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`,
+            transformOrigin: 'center center',
+            transition: scale <= 1 ? 'transform 0.15s ease-out' : 'none',
+            pointerEvents: 'none',
+            userSelect: 'none',
+            WebkitUserSelect: 'none',
+          }}
+        />
+      </div>
+      <p
+        style={{
+          position: 'fixed',
+          bottom: 'max(16px, env(safe-area-inset-bottom, 0px))',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          margin: 0,
+          padding: '8px 16px',
+          borderRadius: 20,
+          background: 'rgba(0,0,0,0.5)',
+          border: '1px solid rgba(255,255,255,0.2)',
+          color: 'rgba(255,255,255,0.85)',
+          fontSize: 13,
+          fontWeight: 500,
+          pointerEvents: 'none',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {hint}
+      </p>
+    </div>
+  )
+}
+
+function FilePreview({ file, mine }) {
+  const src = file.dataUrl || file.url
+  const [fullOpen, setFullOpen] = useState(false)
 
   if (fileLooksLikeImage(file, src)) {
     if (!src) {
@@ -271,103 +466,11 @@ function FilePreview({ file, mine }) {
           </div>
         </div>
         {fullOpen && (
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-label="Imagem em tamanho grande"
-            onClick={() => setFullOpen(false)}
-            style={{
-              position: 'fixed',
-              inset: 0,
-              zIndex: 400,
-              background: 'rgba(0,0,0,0.93)',
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              justifyContent: 'center',
-              cursor: 'pointer',
-              WebkitTapHighlightColor: 'transparent',
-              padding:
-                'max(12px, env(safe-area-inset-top, 0px)) max(12px, env(safe-area-inset-right, 0px)) max(12px, env(safe-area-inset-bottom, 0px)) max(12px, env(safe-area-inset-left, 0px))',
-            }}
-          >
-            <button
-              type="button"
-              aria-label="Voltar ao chat"
-              onClick={() => setFullOpen(false)}
-              style={{
-                position: 'fixed',
-                top: 'max(10px, env(safe-area-inset-top, 0px))',
-                right: 'max(10px, env(safe-area-inset-right, 0px))',
-                zIndex: 401,
-                width: 44,
-                height: 44,
-                borderRadius: '50%',
-                border: '1px solid rgba(255,255,255,0.28)',
-                background: 'rgba(0,0,0,0.55)',
-                color: '#fff',
-                fontSize: 20,
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                lineHeight: 1,
-                fontFamily: 'inherit',
-              }}
-            >
-              ✕
-            </button>
-            <div
-              style={{
-                flex: '1 1 auto',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                minWidth: 0,
-                minHeight: 0,
-                width: '100%',
-                maxHeight: '100%',
-                pointerEvents: 'none',
-              }}
-            >
-              <img
-                src={src}
-                alt={file.name || 'Imagem enviada no chat'}
-                draggable={false}
-                style={{
-                  maxWidth: '100%',
-                  maxHeight: 'min(85dvh, calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 80px))',
-                  width: 'auto',
-                  height: 'auto',
-                  objectFit: 'contain',
-                  borderRadius: 4,
-                  boxShadow: '0 12px 48px rgba(0,0,0,0.65)',
-                  pointerEvents: 'none',
-                  userSelect: 'none',
-                }}
-              />
-            </div>
-            <p
-              style={{
-                position: 'fixed',
-                bottom: 'max(16px, env(safe-area-inset-bottom, 0px))',
-                left: '50%',
-                transform: 'translateX(-50%)',
-                margin: 0,
-                padding: '8px 16px',
-                borderRadius: 20,
-                background: 'rgba(0,0,0,0.5)',
-                border: '1px solid rgba(255,255,255,0.2)',
-                color: 'rgba(255,255,255,0.85)',
-                fontSize: 13,
-                fontWeight: 500,
-                pointerEvents: 'none',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              Toque para voltar ao chat
-            </p>
-          </div>
+          <ChatImageLightbox
+            src={src}
+            fileName={file.name}
+            onClose={() => setFullOpen(false)}
+          />
         )}
       </>
     )
@@ -518,6 +621,37 @@ export default function App() {
     window.addEventListener('beforeinstallprompt', onBeforeInstall)
     return () => window.removeEventListener('beforeinstallprompt', onBeforeInstall)
   }, [])
+
+  // Mobile: bloqueia zoom da página na conversa (pinch + auto-zoom do iOS no input)
+  useEffect(() => {
+    if (!joined || !isMobileDevice()) return
+    const meta = document.querySelector('meta[name="viewport"]')
+    if (!meta) return
+    const prev = meta.getAttribute('content') || VIEWPORT_DEFAULT
+    meta.setAttribute('content', VIEWPORT_NO_ZOOM)
+
+    const blockPinch = e => {
+      if (document.querySelector('.chat-image-lightbox')) return
+      if (e.touches?.length > 1) e.preventDefault()
+    }
+    const blockGesture = e => {
+      if (document.querySelector('.chat-image-lightbox')) return
+      e.preventDefault()
+    }
+
+    document.addEventListener('touchmove', blockPinch, { passive: false })
+    document.addEventListener('gesturestart', blockGesture, { passive: false })
+    document.addEventListener('gesturechange', blockGesture, { passive: false })
+    document.addEventListener('gestureend', blockGesture, { passive: false })
+
+    return () => {
+      meta.setAttribute('content', prev)
+      document.removeEventListener('touchmove', blockPinch)
+      document.removeEventListener('gesturestart', blockGesture)
+      document.removeEventListener('gesturechange', blockGesture)
+      document.removeEventListener('gestureend', blockGesture)
+    }
+  }, [joined])
 
   useEffect(() => {
     const offsetRef = dbRef(db, '.info/serverTimeOffset')
@@ -1206,7 +1340,7 @@ export default function App() {
     <>
     {confirmModal}
     <style>{css}</style>
-    <div style={s.page}>
+    <div style={s.page} className="chat-conversation-root">
       <div style={s.bgBlur} />
       {showOnline && <OnlineModal users={onlineUsers} onClose={() => setShowOnline(false)} />}
 
@@ -1744,6 +1878,15 @@ const css = `
     -webkit-tap-highlight-color: transparent;
     touch-action: manipulation;
   }
+  @media (max-width: 768px), (pointer: coarse) {
+    .chat-conversation-root {
+      touch-action: pan-x pan-y;
+    }
+    .chat-msg-input,
+    .chatMsgEditInput {
+      font-size: 16px !important;
+    }
+  }
   .emoji-panel-btn:hover {
     background: rgba(212,175,55,0.12) !important;
     border-color: rgba(212,175,55,0.2) !important;
@@ -1757,7 +1900,7 @@ const GOLD_FAINT = 'rgba(212,175,55,0.08)'
 
 const s = {
   page: { position: 'fixed', inset: 0, display: 'flex', flexDirection: 'column', background: '#000', isolation: 'isolate', fontFamily: "'Outfit', system-ui, sans-serif", color: '#e8e8ee' },
-  bgBlur: { position: 'fixed', inset: 0, backgroundImage: 'url(/images/image.jpg)', backgroundSize: 'cover', backgroundPosition: 'center', filter: 'blur(2px)', transform: 'scale(1.04)', opacity: 0.62, zIndex: -1, pointerEvents: 'none' },
+  bgBlur: { position: 'fixed', inset: 0, backgroundImage: 'url(/images/image.png)', backgroundSize: 'cover', backgroundPosition: 'center', filter: 'blur(2px)', transform: 'scale(1.04)', opacity: 0.62, zIndex: -1, pointerEvents: 'none' },
 
   // Login
   loginOuter: { flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 'max(24px, env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) max(24px, env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px))', position: 'relative', zIndex: 1 },
