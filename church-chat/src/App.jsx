@@ -1444,7 +1444,7 @@ export default function App() {
               <div style={s.empty}>Carregando mensagens…</div>
             )}
             {messagesReady && messages.length === 0 && (
-              <div style={s.empty}>Nenhuma mensagem ainda. Diga olá! 👋</div>
+              <div style={s.emptyWelcome}>Nenhuma mensagem ainda. Diga olá! 👋</div>
             )}
             {messages.map((m, i) => {
               if (messageIsTombstone(m)) {
@@ -1963,6 +1963,17 @@ const s = {
       '16px calc(14px + env(safe-area-inset-right, 0px)) 10px calc(14px + env(safe-area-inset-left, 0px))',
   },
   empty: { textAlign: 'center', color: 'rgba(212,175,55,0.2)', marginTop: 80, fontSize: 14 },
+  emptyWelcome: {
+    flex: 1,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    textAlign: 'center',
+    color: '#ffd700',
+    fontSize: 15,
+    fontWeight: 500,
+    padding: '0 24px',
+  },
   rowSystem: {
     display: 'flex', justifyContent: 'center', width: '100%', marginBottom: 12, marginTop: 4, padding: '0 12px',
   },
