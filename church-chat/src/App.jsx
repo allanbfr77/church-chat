@@ -303,7 +303,7 @@ function messageIsTombstone(m) {
 
 // ── Logo Component ───────────────────────────────────────────
 function Logo({ size = 'lg' }) {
-  const h = size === 'lg' ? 90 : 30
+  const h = size === 'lg' ? 90 : 32
   return <img src="/images/logo.png" style={{ height: h, objectFit: 'contain', display: 'block' }} alt="Nova Vida Botafogo" />
 }
 
@@ -2146,7 +2146,9 @@ export default function App() {
             <span style={s.dot} />
             <span style={s.onlineCount}>{onlineUsers.length} online</span>
           </button>
-          <button style={s.exitBtn} onClick={handleExit}>Sair</button>
+          <button style={s.exitBtn} onClick={handleExit} aria-label="Sair" title="Sair">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><path d="M16 17l5-5-5-5" /><path d="M21 12H9" /></svg>
+          </button>
         </div>
       </div>
 
@@ -2652,6 +2654,8 @@ const css = `
   @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=Bebas+Neue&display=swap');
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   html, body { margin: 0; padding: 0; overflow: hidden; overscroll-behavior: none; background: #000; }
+  /* Faixa do Safari abaixo da página: mesma cor da barra de mensagem, parece continuação dela */
+  html { background: linear-gradient(to bottom, #000 0 50%, #0e0e12 50% 100%) #000; }
   body { position: fixed; inset: 0; width: 100%; }
   /* Sem seleção/cópia nativa do iOS: copiar só pelo menu do app */
   html, body, #root {
@@ -3048,19 +3052,22 @@ const s = {
   },
 
   // Header — respeita entalhe / Dynamic Island / barra de status (iOS + viewport-fit=cover)
-  versionTag: { fontSize: 10, color: 'rgba(255,255,255,0.35)', whiteSpace: 'nowrap', letterSpacing: '0.04em', lineHeight: 1 },
+  versionTag: {
+    fontSize: 10, fontWeight: 600, color: 'rgba(212,175,55,0.75)', whiteSpace: 'nowrap', letterSpacing: '0.04em', lineHeight: 1,
+    padding: '3px 6px', borderRadius: 6, border: '1px solid rgba(212,175,55,0.25)', background: 'rgba(212,175,55,0.06)',
+  },
   header: {
     display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-    gap: 12, minHeight: 60,
-    paddingTop: 'max(12px, env(safe-area-inset-top, 0px))',
-    paddingRight: 'max(16px, env(safe-area-inset-right, 0px))',
-    paddingBottom: '12px',
-    paddingLeft: 'max(16px, env(safe-area-inset-left, 0px))',
+    gap: 12,
+    paddingTop: 'max(10px, env(safe-area-inset-top, 0px))',
+    paddingRight: 'max(14px, env(safe-area-inset-right, 0px))',
+    paddingBottom: '10px',
+    paddingLeft: 'max(14px, env(safe-area-inset-left, 0px))',
     borderBottom: `1px solid rgba(212,175,55,0.35)`,
     background: '#000', flexShrink: 0, zIndex: 10, position: 'relative',
     boxShadow: '0 2px 20px rgba(0,0,0,0.8)',
   },
-  headerLeft: { display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4, minWidth: 0 },
+  headerLeft: { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 },
   headerTitle: { fontSize: 16, fontWeight: 700, color: GOLD, letterSpacing: '0.03em' },
   headerRight: { display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 },
   dot: { width: 8, height: 8, borderRadius: '50%', background: '#4ade80', boxShadow: '0 0 7px #4ade80', flexShrink: 0 },
@@ -3072,9 +3079,9 @@ const s = {
   },
   onlineCount: { fontSize: 12, color: GOLD, fontWeight: 600 },
   exitBtn: {
-    height: 34, display: 'flex', alignItems: 'center',
+    width: 34, height: 34, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
     background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.14)',
-    borderRadius: 17, padding: '0 14px', color: 'rgba(255,255,255,0.7)', fontSize: 12, fontWeight: 600,
+    borderRadius: 17, color: 'rgba(255,255,255,0.75)', fontSize: 12, fontWeight: 600,
     cursor: 'pointer', fontFamily: 'inherit',
   },
 
@@ -3180,7 +3187,7 @@ const s = {
     borderRight: '1px solid rgba(255,255,255,0.04)',
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
-    background: 'rgba(14,14,18,0.78)',
+    background: '#0e0e12',
     boxShadow: '0 -10px 40px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.04)',
     flexShrink: 0, alignItems: 'center',
   },
