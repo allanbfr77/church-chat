@@ -1878,6 +1878,24 @@ export default function App() {
   }
   const cancelLongPress = () => window.clearTimeout(longPressRef.current)
 
+  // iOS: ao focar um campo que vai ficar atrás do teclado, o Safari "rola" a página
+  // inteira pra cima (header desce e depois sobe). Truque: no instante do foco o campo
+  // é levado visualmente ao topo, então o iOS não precisa rolar nada; no frame seguinte
+  // ele volta pro lugar e o --kb (abaixo) posiciona a barra em cima do teclado.
+  const focusWithoutPan = e => {
+    const el = e.currentTarget
+    if (document.activeElement === el) return
+    e.preventDefault()
+    const top = el.getBoundingClientRect().top
+    el.style.transform = `translateY(${-top}px)`
+    el.style.opacity = '0'
+    el.focus({ preventScroll: true })
+    requestAnimationFrame(() => {
+      el.style.transform = ''
+      el.style.opacity = ''
+    })
+  }
+
   const startEdit = m => {
     if (m.uid !== userId || messageIsTombstone(m) || m.editedOnce) return
     setEditingId(m.id)
@@ -2590,6 +2608,7 @@ export default function App() {
                 touchTypingBroadcast(v)
               }}
               onKeyDown={handleKey}
+              onTouchEnd={focusWithoutPan}
             />
             {!(canSend || sending) && (
               <button type="button" style={s.sendBtn} onClick={startRecording} aria-label="Gravar mensagem de voz" title="Gravar mensagem de voz">
@@ -2625,8 +2644,20 @@ export default function App() {
 const css = `
   @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=Bebas+Neue&display=swap');
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  html, body { margin: 0; padding: 0; overflow: hidden; overscroll-behavior: none; }
+  html, body { margin: 0; padding: 0; overflow: hidden; overscroll-behavior: none; background: #000; }
   body { position: fixed; inset: 0; width: 100%; }
+  /* Sem seleção/cópia nativa do iOS: copiar só pelo menu do app */
+  html, body, #root {
+    -webkit-user-select: none; user-select: none;
+    -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  input, textarea, [contenteditable="true"] {
+    -webkit-user-select: text; user-select: text;
+    -webkit-touch-callout: default;
+  }
+  /* iOS dá zoom (e "pula" a tela) em campo com fonte < 16px */
+  @media (pointer: coarse) { input, textarea { font-size: 16px !important; } }
   ::-webkit-scrollbar { width: 4px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: rgba(212,175,55,0.2); border-radius: 2px; }
@@ -3134,7 +3165,7 @@ const s = {
   inputBar: {
     display: 'flex', gap: 8,
     padding:
-      '12px calc(12px + env(safe-area-inset-right, 0px)) max(12px, env(safe-area-inset-bottom, 0px)) calc(12px + env(safe-area-inset-left, 0px))',
+      '12px calc(12px + env(safe-area-inset-right, 0px)) max(12px, calc(env(safe-area-inset-bottom, 0px) - var(--kb, 0px))) calc(12px + env(safe-area-inset-left, 0px))',
     borderTop: '1px solid rgba(255,255,255,0.05)',
     borderLeft: '1px solid rgba(255,255,255,0.04)',
     borderRight: '1px solid rgba(255,255,255,0.04)',
@@ -3264,7 +3295,7 @@ const s = {
     borderRadius: 18,
     padding: '24px 22px 20px',
     boxShadow: '0 28px 70px rgba(0,0,0,0.85), 0 0 0 1px rgba(212,175,55,0.06) inset, 0 0 40px rgba(212,175,55,0.04)',
-    userSelect: 'text', WebkitUserSelect: 'text',
+    userSelect: 'none', WebkitUserSelect: 'none',
   },
   confirmTitle: {
     fontSize: 11, fontWeight: 800, color: GOLD, letterSpacing: '0.14em', textTransform: 'uppercase',
