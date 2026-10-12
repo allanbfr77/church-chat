@@ -1482,38 +1482,36 @@ export default function App() {
     setShowJump(false)
   }
 
-  // Teclado virtual estilo WhatsApp: a página acompanha a área visível (visualViewport),
-  // o header fica parado, só a lista de mensagens encolhe e continua no fim.
+  // Teclado virtual como overlay: o layout (página, header, fundo) não é redimensionado
+  // (viewport meta overlays-content). Medimos só a área coberta pelo teclado (--kb) e
+  // reservamos esse espaço na base do painel para o campo de texto ficar acima do teclado.
+  // --app-top compensa o pan do visual viewport (iOS) para o header não se deslocar.
   useEffect(() => {
     const vv = window.visualViewport
+    if (!vv) return
     const root = document.documentElement
-    let lastH = vv ? vv.height : window.innerHeight
-    const sync = () => {
-      const h = vv ? vv.height : window.innerHeight
-      const top = vv ? vv.offsetTop : 0
-      root.style.setProperty('--app-h', `${h}px`)
-      root.style.setProperty('--app-top', `${top}px`)
+    let raf = 0
+    let lastKb = 0
+    const apply = () => {
+      raf = 0
+      const kb = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop))
+      root.style.setProperty('--kb', `${kb}px`)
+      root.style.setProperty('--app-top', `${Math.round(vv.offsetTop)}px`)
       if (window.scrollX || window.scrollY) window.scrollTo(0, 0)
-      if (h < lastH && atBottomRef.current) {
-        requestAnimationFrame(() => bottomRef.current?.scrollIntoView({ behavior: 'auto' }))
+      if (kb > lastKb && atBottomRef.current) {
+        bottomRef.current?.scrollIntoView({ behavior: 'auto' })
       }
-      lastH = h
+      lastKb = kb
     }
-    sync()
-    if (vv) {
-      vv.addEventListener('resize', sync)
-      vv.addEventListener('scroll', sync)
-    }
-    window.addEventListener('resize', sync)
-    window.addEventListener('scroll', sync)
+    const sync = () => { if (!raf) raf = requestAnimationFrame(apply) }
+    apply()
+    vv.addEventListener('resize', sync)
+    vv.addEventListener('scroll', sync)
     return () => {
-      if (vv) {
-        vv.removeEventListener('resize', sync)
-        vv.removeEventListener('scroll', sync)
-      }
-      window.removeEventListener('resize', sync)
-      window.removeEventListener('scroll', sync)
-      root.style.removeProperty('--app-h')
+      if (raf) cancelAnimationFrame(raf)
+      vv.removeEventListener('resize', sync)
+      vv.removeEventListener('scroll', sync)
+      root.style.removeProperty('--kb')
       root.style.removeProperty('--app-top')
     }
   }, [])
@@ -2979,7 +2977,7 @@ const GOLD_DIM = 'rgba(212,175,55,0.25)'
 const GOLD_FAINT = 'rgba(212,175,55,0.08)'
 
 const s = {
-  page: { position: 'fixed', top: 0, left: 0, right: 0, height: 'var(--app-h, 100dvh)', transform: 'translateY(var(--app-top, 0px))', display: 'flex', flexDirection: 'column', background: '#000', isolation: 'isolate', fontFamily: "'Outfit', system-ui, sans-serif", color: '#e8e8ee' },
+  page: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, transform: 'translateY(var(--app-top, 0px))', display: 'flex', flexDirection: 'column', background: '#000', isolation: 'isolate', fontFamily: "'Outfit', system-ui, sans-serif", color: '#e8e8ee' },
   bgBlur: { position: 'fixed', inset: 0, backgroundImage: 'url(/images/image.png)', backgroundSize: 'cover', backgroundPosition: 'center', filter: 'blur(2px)', transform: 'scale(1.04)', opacity: 0.62, zIndex: -1, pointerEvents: 'none' },
 
   // Login
@@ -3041,7 +3039,7 @@ const s = {
   // Layout
   desktopWrapper: { flex: 1, display: 'flex', overflow: 'hidden', justifyContent: 'center', position: 'relative', zIndex: 1 },
   chatPanel: {
-    flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', maxWidth: 720,
+    flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', maxWidth: 720, paddingBottom: 'var(--kb, 0px)',
     borderLeft: `1px solid ${GOLD_DIM}`, borderRight: `1px solid ${GOLD_DIM}`,
   },
   msgArea: {
