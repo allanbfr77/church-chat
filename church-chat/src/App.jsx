@@ -152,6 +152,22 @@ function fmtDuration(sec) {
 
 const VOICE_MAX_SECS = 120
 
+// Transcrição via função serverless (Whisper). Roda após o envio e grava o texto na mensagem.
+async function transcribeVoiceMessage(messageId, dataUrl) {
+  try {
+    const res = await fetch('/api/transcribe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messageId, dataUrl }),
+    })
+    if (!res.ok) return
+    const { text } = await res.json()
+    if (text && text.trim()) await set(dbRef(db, `messages/${messageId}/file/transcript`), text.trim())
+  } catch (err) {
+    console.error('transcribe', err)
+  }
+}
+
 function Ticks({ level }) {
   // level: 1 enviado, 2 entregue, 3 lido
   const color = level >= 3 ? '#FFD700' : 'rgba(255,255,255,0.6)'
@@ -209,6 +225,7 @@ function AudioBubble({ file }) {
         </div>
         <div className="chatAudioTime">{fmtDuration(playing || pos > 0 ? pos : total)}</div>
       </div>
+      {file.transcript && <div className="chatAudioTranscript">{file.transcript}</div>}
     </div>
   )
 }
@@ -1701,7 +1718,10 @@ export default function App() {
             ...(avatarRef.current ? { avatar: avatarRef.current } : {}),
             file: { name: `audio.${ext}`, size: blob.size, type, dataUrl, duration: Math.round(duration) },
             ...(replyingTo ? { replyTo: replyingTo } : {}),
-          }).then(ref => setSentIds(prev => new Set([...prev, ref.key])))
+          }).then(ref => {
+            setSentIds(prev => new Set([...prev, ref.key]))
+            transcribeVoiceMessage(ref.key, dataUrl)
+          })
           setReplyingTo(null)
         } catch (err) {
           console.error(err)
@@ -2744,7 +2764,8 @@ const css = `
   @keyframes recPulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
 
   /* Player de áudio */
-  .chatAudio { display: flex; align-items: center; gap: 10px; min-width: 210px; padding: 2px 0 4px; }
+  .chatAudio { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; min-width: 210px; padding: 2px 0 4px; }
+  .chatAudioTranscript { flex-basis: 100%; font-size: 13px; line-height: 1.35; font-style: italic; color: rgba(255,255,255,0.85); white-space: pre-wrap; word-break: break-word; }
   .chatAudioBtn {
     width: 40px; height: 40px; padding: 0; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
     background: linear-gradient(135deg, #C9A84C, #FFD700); color: #1a1300; border: none; border-radius: 50%; cursor: pointer;
