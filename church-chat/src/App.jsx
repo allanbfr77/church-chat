@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { db } from './firebase'
 import {
   ref as dbRef,
@@ -90,6 +91,40 @@ function readAsDataURL(file) {
 }
 
 /** Remove quebras de linha do texto do chat (exibição e persistência). */
+// Detecta URLs (com protocolo, www. ou domínio.tld) e devolve nós React; só http(s) vira link
+const LINK_RE = /(?:https?:\/\/|www\.)[^\s<>]+|(?<![\w@.\/-])(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+(?:com|net|org|edu|gov|io|me|app|dev|info|biz|tv|co|br|pt|us|uk|ar|cl|mx|de|fr|es|it|ly|xyz|site|online|store|shop)(?![a-z0-9-])(?:[\/?#][^\s<>]*)?/gi
+
+function linkifyText(text) {
+  const str = String(text ?? '')
+  const out = []
+  let last = 0
+  let key = 0
+  for (const match of str.matchAll(LINK_RE)) {
+    let url = match[0]
+    // pontuação final não faz parte do link; ")" só sai se não houver "(" correspondente
+    for (;;) {
+      const c = url[url.length - 1]
+      if (/[.,;:!?'"\]}]/.test(c)) url = url.slice(0, -1)
+      else if (c === ')' && (url.match(/\(/g) || []).length < (url.match(/\)/g) || []).length) url = url.slice(0, -1)
+      else break
+    }
+    if (!url || /^[a-z]+:\/\/$/i.test(url)) continue
+    const href = /^https?:\/\//i.test(url) ? url : `https://${url}`
+    try {
+      const u = new URL(href)
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') continue
+    } catch { continue }
+    if (match.index > last) out.push(str.slice(last, match.index))
+    out.push(
+      <a key={key++} className="chatMsgLink" href={href} target="_blank" rel="noopener noreferrer">{url}</a>,
+    )
+    last = match.index + url.length
+  }
+  if (!out.length) return str
+  if (last < str.length) out.push(str.slice(last))
+  return out
+}
+
 function collapseChatLineBreaks(str) {
   return String(str ?? '').replace(/\r\n|\r|\n/g, ' ')
 }
@@ -232,9 +267,38 @@ function ChatImageLightbox({ src, fileName, onClose }) {
     setOffset({ x: 0, y: 0 })
   }, [src])
 
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
+  const historyPushed = useRef(false)
+  const [dlState, setDlState] = useState('idle') // idle | loading | done
+  const dlTimerRef = useRef(null)
+  useEffect(() => () => clearTimeout(dlTimerRef.current), [])
+
+  // Fecha via UI: desfaz a entrada de histórico (se houver) para o "voltar" do sistema ficar consistente
+  const requestClose = () => {
+    if (historyPushed.current) window.history.back()
+    else onCloseRef.current()
+  }
+
+  useEffect(() => {
+    const onPop = () => {
+      historyPushed.current = false
+      onCloseRef.current()
+    }
+    try {
+      // StrictMode (dev) monta duas vezes: não empilha uma segunda entrada
+      if (!window.history.state?.chatImageLightbox) {
+        window.history.pushState({ chatImageLightbox: true }, '')
+      }
+      historyPushed.current = true
+    } catch {}
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
+  }, [])
+
   useEffect(() => {
     const onKey = e => {
-      if (e.key === 'Escape') onClose()
+      if (e.key === 'Escape') requestClose()
     }
     document.addEventListener('keydown', onKey)
     const prevOverflow = document.body.style.overflow
@@ -243,7 +307,34 @@ function ChatImageLightbox({ src, fileName, onClose }) {
       document.removeEventListener('keydown', onKey)
       document.body.style.overflow = prevOverflow
     }
-  }, [onClose])
+  }, [])
+
+  const handleDownload = async e => {
+    e.stopPropagation()
+    if (dlState === 'loading') return
+    setDlState('loading')
+    const startedAt = Date.now()
+    const day = new Date().toISOString().slice(0, 10)
+    const nameExt = (String(fileName || '').match(/\.([a-z0-9]{2,5})$/i) || [])[1]
+    let blob = null
+    try {
+      blob = await (await fetch(src)).blob()
+    } catch {}
+    const mimeExt = blob?.type ? blob.type.split('/')[1]?.replace('jpeg', 'jpg').replace(/\+.*/, '') : ''
+    const ext = (nameExt || mimeExt || 'jpg').toLowerCase()
+    const a = document.createElement('a')
+    a.href = blob ? URL.createObjectURL(blob) : src
+    a.download = `imagem-${day}.${ext}`
+    a.rel = 'noopener'
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    if (blob) setTimeout(() => URL.revokeObjectURL(a.href), 10000)
+    // garante um tempo mínimo de "carregando" para o feedback ser perceptível
+    await new Promise(r => setTimeout(r, Math.max(0, 700 - (Date.now() - startedAt))))
+    setDlState('done')
+    dlTimerRef.current = setTimeout(() => setDlState('idle'), 1800)
+  }
 
   const handleTouchStart = e => {
     if (e.touches.length === 2) {
@@ -290,62 +381,97 @@ function ChatImageLightbox({ src, fileName, onClose }) {
     }
   }
 
-  const handleBackdropClick = () => {
-    if (scaleRef.current <= 1) onClose()
+  const pillBtnStyle = {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    minHeight: 48,
+    minWidth: 132,
+    padding: '0 22px',
+    borderRadius: 14,
+    border: '1px solid rgba(255,255,255,0.22)',
+    background: 'rgba(30,30,36,0.78)',
+    backdropFilter: 'blur(14px)',
+    WebkitBackdropFilter: 'blur(14px)',
+    boxShadow: '0 6px 20px rgba(0,0,0,0.55)',
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: 600,
+    letterSpacing: 0.2,
+    cursor: 'pointer',
+    fontFamily: 'inherit',
+    WebkitTapHighlightColor: 'transparent',
+    transition: 'background 0.2s, transform 0.1s',
+  }
+  const dlBtnStyle = {
+    ...pillBtnStyle,
+    border: '1px solid rgba(255,215,0,0.55)',
+    background: dlState === 'done'
+      ? 'linear-gradient(135deg, #3fa66a, #2f8a55)'
+      : 'linear-gradient(135deg, #C9A84C, #FFD700)',
+    color: dlState === 'done' ? '#fff' : '#1a1300',
+    cursor: dlState === 'loading' ? 'progress' : 'pointer',
+  }
+  const iconProps = {
+    width: 20, height: 20, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',
+    strokeWidth: 2.4, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true,
   }
 
-  const hint = scale > 1
-    ? 'Pinça para zoom · arraste para mover'
-    : 'Toque para voltar · pinça para ampliar'
-
-  return (
+  return createPortal(
     <div
       className="chat-image-lightbox"
       role="dialog"
       aria-modal="true"
       aria-label="Imagem em tamanho grande"
-      onClick={handleBackdropClick}
       style={{
         position: 'fixed',
         inset: 0,
-        zIndex: 400,
+        zIndex: 2147483000,
         background: 'rgba(0,0,0,0.93)',
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
         justifyContent: 'center',
-        cursor: 'pointer',
         WebkitTapHighlightColor: 'transparent',
         padding:
           'max(12px, env(safe-area-inset-top, 0px)) max(12px, env(safe-area-inset-right, 0px)) max(12px, env(safe-area-inset-bottom, 0px)) max(12px, env(safe-area-inset-left, 0px))',
       }}
     >
-      <button
-        type="button"
-        aria-label="Voltar ao chat"
-        onClick={onClose}
+      <div
         style={{
           position: 'fixed',
-          top: 'max(10px, env(safe-area-inset-top, 0px))',
-          right: 'max(10px, env(safe-area-inset-right, 0px))',
+          bottom: 'max(16px, env(safe-area-inset-bottom, 0px))',
+          left: 0,
+          right: 0,
           zIndex: 401,
-          width: 44,
-          height: 44,
-          borderRadius: '50%',
-          border: '1px solid rgba(255,255,255,0.28)',
-          background: 'rgba(0,0,0,0.55)',
-          color: '#fff',
-          fontSize: 20,
-          cursor: 'pointer',
           display: 'flex',
-          alignItems: 'center',
           justifyContent: 'center',
-          lineHeight: 1,
-          fontFamily: 'inherit',
+          gap: 14,
         }}
       >
-        ✕
-      </button>
+        <style>{`@keyframes lbSpin { to { transform: rotate(360deg) } }`}</style>
+        <button type="button" aria-label="Voltar ao chat" onClick={requestClose} style={pillBtnStyle}>
+          <svg {...iconProps}><path d="M19 12H5" /><path d="m12 19-7-7 7-7" /></svg>
+          Voltar
+        </button>
+        <button
+          type="button"
+          aria-label="Baixar imagem"
+          aria-busy={dlState === 'loading'}
+          onClick={handleDownload}
+          style={dlBtnStyle}
+        >
+          {dlState === 'loading' ? (
+            <svg {...iconProps} style={{ animation: 'lbSpin 0.8s linear infinite' }}><path d="M21 12a9 9 0 1 1-6.2-8.55" /></svg>
+          ) : dlState === 'done' ? (
+            <svg {...iconProps}><path d="m5 12.5 4.5 4.5L19 7.5" /></svg>
+          ) : (
+            <svg {...iconProps}><path d="M12 3v12" /><path d="m7 10 5 5 5-5" /><path d="M5 21h14" /></svg>
+          )}
+          {dlState === 'loading' ? 'Baixando…' : dlState === 'done' ? 'Baixado' : 'Baixar'}
+        </button>
+      </div>
       <div
         className="chat-image-lightbox-stage"
         onTouchStart={handleTouchStart}
@@ -372,7 +498,7 @@ function ChatImageLightbox({ src, fileName, onClose }) {
           draggable={false}
           style={{
             maxWidth: '100%',
-            maxHeight: 'min(85dvh, calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 80px))',
+            maxHeight: 'calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 150px)',
             width: 'auto',
             height: 'auto',
             objectFit: 'contain',
@@ -387,27 +513,8 @@ function ChatImageLightbox({ src, fileName, onClose }) {
           }}
         />
       </div>
-      <p
-        style={{
-          position: 'fixed',
-          bottom: 'max(16px, env(safe-area-inset-bottom, 0px))',
-          left: '50%',
-          transform: 'translateX(-50%)',
-          margin: 0,
-          padding: '8px 16px',
-          borderRadius: 20,
-          background: 'rgba(0,0,0,0.5)',
-          border: '1px solid rgba(255,255,255,0.2)',
-          color: 'rgba(255,255,255,0.85)',
-          fontSize: 13,
-          fontWeight: 500,
-          pointerEvents: 'none',
-          whiteSpace: 'nowrap',
-        }}
-      >
-        {hint}
-      </p>
-    </div>
+    </div>,
+    document.body,
   )
 }
 
@@ -1372,7 +1479,7 @@ export default function App() {
           <div style={s.pwaMobileHintTitle}>📱 Celular: avisos com o chat em segundo plano</div>
           {isAndroidDevice() && (
             <p style={s.pwaMobileHintText}>
-              Instale o <strong>NVB Chat</strong> como aplicativo: menu do Chrome (<strong>⋮</strong>) →{' '}
+              Instale o <strong>INVB - Chat</strong> como aplicativo: menu do Chrome (<strong>⋮</strong>) →{' '}
               <strong>Instalar app</strong> ou <strong>Adicionar à tela inicial</strong>. Depois use o ícone do app e ative as notificações abaixo.
             </p>
           )}
@@ -1399,7 +1506,7 @@ export default function App() {
               {isIOSDevice() ? (
                 <>
                   Notificações bloqueadas. No Safari: ícone <strong>aA</strong> → <strong>Notificações</strong> → <strong>Permitir</strong>.
-                  Se abre pelo ícone na Tela de Início: <strong>Ajustes</strong> do iPhone → <strong>NVB Chat</strong> → <strong>Notificações</strong> → Permitir.
+                  Se abre pelo ícone na Tela de Início: <strong>Ajustes</strong> do iPhone → <strong>INVB - Chat</strong> → <strong>Notificações</strong> → Permitir.
                   Depois recarregue esta página.
                 </>
               ) : isAndroidDevice() ? (
@@ -1537,7 +1644,7 @@ export default function App() {
                             <>
                               {m.file && <FilePreview file={m.file} mine={mine} />}
                               {m.text && (
-                                <div className="chatMsgText">{collapseChatLineBreaks(m.text)}</div>
+                                <div className="chatMsgText">{linkifyText(collapseChatLineBreaks(m.text))}</div>
                               )}
                               {m.editedOnce && <div className="chatMsgEdited">editada</div>}
                             </>
@@ -1804,6 +1911,16 @@ const css = `
     word-break: normal;       /* não quebra palavras normais no meio */
     overflow-wrap: anywhere;  /* quebra URLs e strings sem espaço */
   }
+  .chatMsgLink {
+    color: #8ecbff;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    overflow-wrap: anywhere;
+    word-break: break-all;
+    padding: 4px 0;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .chatMsgLink:hover { color: #bfe3ff; }
   .chatMsgEdited {
     font-size: 10px;
     color: rgba(212,175,55,0.45);

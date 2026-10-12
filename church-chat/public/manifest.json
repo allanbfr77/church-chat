@@ -1,6 +1,6 @@
 {
-  "name": "Nova Vida Botafogo — Chat",
-  "short_name": "NVB Chat",
+  "name": "INVB - Chat",
+  "short_name": "INVB - Chat",
   "description": "Chat interno da Igreja Nova Vida Botafogo",
   "start_url": "/",
   "display": "standalone",

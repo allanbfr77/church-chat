@@ -1,12 +1,16 @@
-// Service Worker — NVB Chat
+// Service Worker — INVB - Chat
 // Propósito: viabilizar a instalação como PWA.
 // O app depende de Firebase (sempre online), então o SW não faz cache agressivo.
 
-const CACHE_NAME = 'nvb-chat-v1';
+const CACHE_NAME = 'nvb-chat-v2';
 
 // Instala e ativa imediatamente
 self.addEventListener('install', () => self.skipWaiting());
-self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
+self.addEventListener('activate', e => e.waitUntil(
+  caches.keys()
+    .then(keys => Promise.all(keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k))))
+    .then(() => self.clients.claim())
+));
 
 // Toque na notificação: voltar ao chat (Android / desktop)
 self.addEventListener('notificationclick', event => {
@@ -29,6 +33,9 @@ self.addEventListener('fetch', e => {
 
   // Ignora requisições Firebase / externas — essas nunca são cacheadas
   if (!url.origin.includes(self.location.hostname)) return;
+
+  // Desenvolvimento local: nunca serve JS/CSS do cache (senão o Vite mostra código antigo)
+  if (url.hostname === 'localhost' || url.hostname === '127.0.0.1') return;
 
   // Para recursos estáticos (JS, CSS, imagens, fontes): cache-first
   if (
