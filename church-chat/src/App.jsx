@@ -303,7 +303,7 @@ function messageIsTombstone(m) {
 
 // ── Logo Component ───────────────────────────────────────────
 function Logo({ size = 'lg' }) {
-  const h = size === 'lg' ? 90 : 38
+  const h = size === 'lg' ? 90 : 30
   return <img src="/images/logo.png" style={{ height: h, objectFit: 'contain', display: 'block' }} alt="Nova Vida Botafogo" />
 }
 
@@ -863,6 +863,24 @@ export default function App() {
   const [presenceAvatars, setPresenceAvatars] = useState({})
   const [takenAvatars, setTakenAvatars] = useState(() => new Set()) // chaves em uso por outras pessoas
   const messageInputRef = useRef(null)
+
+  // iOS: ao focar um campo que vai ficar atrás do teclado, o Safari rola a página inteira
+  // (o header some e a tela vai pro meio do chat). Truque: no instante do foco o campo é
+  // levado visualmente ao topo, então o iOS não rola nada; no frame seguinte ele volta e o
+  // --kb posiciona a barra em cima do teclado. Use SEMPRE isto em vez de input.focus().
+  const focusNoPan = el => {
+    if (!el) return
+    if (document.activeElement === el) return
+    const top = el.getBoundingClientRect().top
+    el.style.transform = `translateY(${-top}px)`
+    el.style.opacity = '0'
+    el.focus({ preventScroll: true })
+    requestAnimationFrame(() => {
+      el.style.transform = ''
+      el.style.opacity = ''
+      if (window.scrollX || window.scrollY) window.scrollTo(0, 0)
+    })
+  }
   const fileRef      = useRef(null)
   const emojiPickerRef = useRef(null)
   const knownIdsRef  = useRef(null)
@@ -1645,7 +1663,7 @@ export default function App() {
     setInput(next)
     touchTypingBroadcast(next)
     requestAnimationFrame(() => {
-      el.focus()
+      focusNoPan(el)
       // setSelectionRange usa índices UTF-16; string.length está alinhado a isso
       const pos = start + emoji.length
       el.setSelectionRange(pos, pos)
@@ -1672,7 +1690,7 @@ export default function App() {
       setInput('')
       setPendingFile(null)
       setReplyingTo(null)
-      messageInputRef.current?.focus()
+      focusNoPan(messageInputRef.current)
     } catch (err) {
       console.error(err)
       setFileError('Erro ao enviar. Tente novamente.')
@@ -1848,7 +1866,7 @@ export default function App() {
     if (messageIsTombstone(m)) return
     setReplyingTo({ id: m.id, name: m.name || 'Alguém', text: replySnippet(m) })
     setMsgMenuId(null)
-    messageInputRef.current?.focus()
+    focusNoPan(messageInputRef.current)
   }
 
   const toggleReaction = async (m, emoji) => {
@@ -1878,22 +1896,11 @@ export default function App() {
   }
   const cancelLongPress = () => window.clearTimeout(longPressRef.current)
 
-  // iOS: ao focar um campo que vai ficar atrás do teclado, o Safari "rola" a página
-  // inteira pra cima (header desce e depois sobe). Truque: no instante do foco o campo
-  // é levado visualmente ao topo, então o iOS não precisa rolar nada; no frame seguinte
-  // ele volta pro lugar e o --kb (abaixo) posiciona a barra em cima do teclado.
+  // Toque no campo de mensagem: foca sem o iOS rolar a página (ver focusNoPan)
   const focusWithoutPan = e => {
-    const el = e.currentTarget
-    if (document.activeElement === el) return
+    if (document.activeElement === e.currentTarget) return
     e.preventDefault()
-    const top = el.getBoundingClientRect().top
-    el.style.transform = `translateY(${-top}px)`
-    el.style.opacity = '0'
-    el.focus({ preventScroll: true })
-    requestAnimationFrame(() => {
-      el.style.transform = ''
-      el.style.opacity = ''
-    })
+    focusNoPan(e.currentTarget)
   }
 
   const startEdit = m => {
@@ -2122,6 +2129,7 @@ export default function App() {
       <div style={s.header}>
         <div style={s.headerLeft}>
           <Logo size="sm" />
+          <span style={s.versionTag}>v{__APP_VERSION__}</span>
         </div>
         <div style={s.headerRight}>
           {isAdmin && (
@@ -2134,7 +2142,6 @@ export default function App() {
               {clearing ? '⏳' : '🗑️ Limpar chat'}
             </button>
           )}
-          <span style={s.versionTag}>v{__APP_VERSION__}</span>
           <button style={s.onlineBtn} onClick={() => setShowOnline(v => !v)}>
             <span style={s.dot} />
             <span style={s.onlineCount}>{onlineUsers.length} online</span>
@@ -3041,31 +3048,33 @@ const s = {
   },
 
   // Header — respeita entalhe / Dynamic Island / barra de status (iOS + viewport-fit=cover)
-  versionTag: { fontSize: 11, color: 'rgba(255,255,255,0.45)', whiteSpace: 'nowrap', flexShrink: 0 },
+  versionTag: { fontSize: 10, color: 'rgba(255,255,255,0.35)', whiteSpace: 'nowrap', letterSpacing: '0.04em', lineHeight: 1 },
   header: {
     display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-    paddingTop: 'max(10px, env(safe-area-inset-top, 0px))',
-    paddingRight: 'max(18px, env(safe-area-inset-right, 0px))',
-    paddingBottom: '10px',
-    paddingLeft: 'max(18px, env(safe-area-inset-left, 0px))',
-    borderBottom: `2px solid rgba(212,175,55,0.45)`,
-    background: '#0a0a0a', flexShrink: 0, zIndex: 10, position: 'relative',
+    gap: 12, minHeight: 60,
+    paddingTop: 'max(12px, env(safe-area-inset-top, 0px))',
+    paddingRight: 'max(16px, env(safe-area-inset-right, 0px))',
+    paddingBottom: '12px',
+    paddingLeft: 'max(16px, env(safe-area-inset-left, 0px))',
+    borderBottom: `1px solid rgba(212,175,55,0.35)`,
+    background: '#000', flexShrink: 0, zIndex: 10, position: 'relative',
     boxShadow: '0 2px 20px rgba(0,0,0,0.8)',
   },
-  headerLeft: { display: 'flex', alignItems: 'center', gap: 10 },
+  headerLeft: { display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4, minWidth: 0 },
   headerTitle: { fontSize: 16, fontWeight: 700, color: GOLD, letterSpacing: '0.03em' },
-  headerRight: { display: 'flex', alignItems: 'center', gap: 10 },
+  headerRight: { display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 },
   dot: { width: 8, height: 8, borderRadius: '50%', background: '#4ade80', boxShadow: '0 0 7px #4ade80', flexShrink: 0 },
   onlineBtn: {
-    display: 'flex', alignItems: 'center', gap: 7,
+    display: 'flex', alignItems: 'center', gap: 7, height: 34,
     background: GOLD_FAINT, border: `1px solid ${GOLD_DIM}`,
-    borderRadius: 20, padding: '5px 12px', cursor: 'pointer', fontFamily: 'inherit',
+    borderRadius: 17, padding: '0 12px', cursor: 'pointer', fontFamily: 'inherit',
     transition: 'background .2s',
   },
   onlineCount: { fontSize: 12, color: GOLD, fontWeight: 600 },
   exitBtn: {
-    background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)',
-    borderRadius: 8, padding: '5px 13px', color: 'rgba(255,255,255,0.4)', fontSize: 12,
+    height: 34, display: 'flex', alignItems: 'center',
+    background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.14)',
+    borderRadius: 17, padding: '0 14px', color: 'rgba(255,255,255,0.7)', fontSize: 12, fontWeight: 600,
     cursor: 'pointer', fontFamily: 'inherit',
   },
 
@@ -3165,7 +3174,7 @@ const s = {
   inputBar: {
     display: 'flex', gap: 8,
     padding:
-      '12px calc(12px + env(safe-area-inset-right, 0px)) max(12px, calc(env(safe-area-inset-bottom, 0px) - var(--kb, 0px))) calc(12px + env(safe-area-inset-left, 0px))',
+      '12px calc(12px + env(safe-area-inset-right, 0px)) max(10px, calc(env(safe-area-inset-bottom, 0px) - 14px - var(--kb, 0px))) calc(12px + env(safe-area-inset-left, 0px))',
     borderTop: '1px solid rgba(255,255,255,0.05)',
     borderLeft: '1px solid rgba(255,255,255,0.04)',
     borderRight: '1px solid rgba(255,255,255,0.04)',
