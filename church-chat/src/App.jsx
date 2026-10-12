@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { db } from './firebase'
+import { AVATARS, avatarUrl } from './avatars'
 import {
   ref as dbRef,
   push,
@@ -11,6 +12,7 @@ import {
   onDisconnect,
   query,
   limitToLast,
+  get,
   orderByChild,
   startAt,
   runTransaction,
@@ -61,6 +63,17 @@ const EMOJI_PALETTE = [
 ]
 
 // ── Helpers ──────────────────────────────────────────────────
+// Chave estável do nome (sem acento, minúsculas, sem caracteres proibidos em chaves do Firebase)
+function nameKey(n) {
+  return String(n || '').trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/\s+/g, ' ').replace(/[.$#\[\]\/]/g, '_') || '_'
+}
+
+// Chave do avatar no Firebase (o id é o nome do arquivo, que tem "." — proibido em chaves)
+function avatarKey(id) {
+  return String(id || '').replace(/[.$#\[\]\/]/g, '_')
+}
+
 function uid() { return Math.random().toString(36).slice(2) + Date.now().toString(36) }
 function timeStr(ts) {
   return new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
@@ -292,7 +305,34 @@ const USER_COLORS = [
   '#80DEEA', // light cyan
   '#FFD54F', // amber
 ]
+// Cores atribuídas (nome -> cor): vêm da presença (quem está online) e das mensagens já enviadas,
+// para que duas pessoas diferentes não fiquem com a mesma cor
+const COLOR_REGISTRY = new Map()
+function colorHashIndex(name) {
+  const key = (name || '').toLowerCase()
+  let hash = 0
+  for (let i = 0; i < key.length; i++) {
+    hash = key.charCodeAt(i) + ((hash << 5) - hash)
+    hash |= 0
+  }
+  return Math.abs(hash) % USER_COLORS.length
+}
+// Escolhe a cor preferida do nome (pelo hash) ou a próxima livre
+function pickFreeColor(name, used) {
+  const pref = colorHashIndex(name)
+  for (let i = 0; i < USER_COLORS.length; i++) {
+    const c = USER_COLORS[(pref + i) % USER_COLORS.length]
+    if (!used.has(c)) return c
+  }
+  return USER_COLORS[pref]
+}
+const AVATAR_REGISTRY = new Map() // nome (minúsculo) -> id do avatar
+function avatarOf(name) {
+  return avatarUrl(AVATAR_REGISTRY.get(String(name || '').trim().toLowerCase()))
+}
 function userColor(name) {
+  const known = COLOR_REGISTRY.get(String(name || '').trim().toLowerCase())
+  if (known) return known
   const key = (name || '').toLowerCase()
   let hash = 0
   for (let i = 0; i < key.length; i++) {
@@ -322,8 +362,8 @@ function getStoredSession() {
   } catch {}
   return null
 }
-function saveSession(userId, name, isAdmin = false) {
-  try { localStorage.setItem('cruch_session', JSON.stringify({ userId, name, isAdmin })) } catch {}
+function saveSession(userId, name, isAdmin = false, avatar = null) {
+  try { localStorage.setItem('cruch_session', JSON.stringify({ userId, name, isAdmin, avatar })) } catch {}
 }
 function clearSession() {
   try { localStorage.removeItem('cruch_session') } catch {}
@@ -714,7 +754,9 @@ function OnlineModal({ users, onClose }) {
           )}
           {users.map((u, i) => (
             <div key={i} style={sm.userRow}>
-              <div style={{ ...sm.dot, background: userColor(u), boxShadow: `0 0 6px ${userColor(u)}` }} />
+              {avatarOf(u)
+                ? <img src={avatarOf(u)} alt="" style={{ width: 26, height: 26, borderRadius: '50%', objectFit: 'cover', border: `2px solid ${userColor(u)}` }} />
+                : <div style={{ ...sm.dot, background: userColor(u), boxShadow: `0 0 6px ${userColor(u)}` }} />}
               <span style={{ ...sm.userName, color: userColor(u) }}>{u}</span>
             </div>
           ))}
@@ -748,6 +790,9 @@ export default function App() {
   const stored = getStoredSession()
   const [userId]      = useState(() => stored?.userId || uid())
   const [name, setName]               = useState(stored?.name || '')
+  const [avatar, setAvatar]           = useState(() => (avatarUrl(stored?.avatar) ? stored.avatar : null))
+  const avatarRef = useRef(avatar)
+  avatarRef.current = avatar
   const [joined, setJoined]           = useState(!!stored?.name)
   const [messages, setMessages]       = useState([])
   const [messagesReady, setMessagesReady] = useState(false)
@@ -758,6 +803,8 @@ export default function App() {
   const [pendingFile, setPendingFile] = useState(null)
   const [reading, setReading]         = useState(false)
   const [fileError, setFileError]     = useState('')
+  const [nameError, setNameError]     = useState('')
+  const [claiming, setClaiming]       = useState(false)
   const [sending, setSending]         = useState(false)
   const [isAdmin, setIsAdmin]         = useState(stored?.isAdmin || false)
   const [adminCode, setAdminCode]     = useState('')
@@ -794,6 +841,10 @@ export default function App() {
   const [confirmDialog, setConfirmDialog]   = useState(null)
   const bottomRef    = useRef(null)
   const connIdRef    = useRef(uid())
+  const myColorRef   = useRef(null)
+  const [presenceColors, setPresenceColors] = useState({})
+  const [presenceAvatars, setPresenceAvatars] = useState({})
+  const [takenAvatars, setTakenAvatars] = useState(() => new Set()) // chaves em uso por outras pessoas
   const messageInputRef = useRef(null)
   const fileRef      = useRef(null)
   const emojiPickerRef = useRef(null)
@@ -987,10 +1038,65 @@ export default function App() {
     }, 2800)
   }
 
-  const handleJoin = () => {
-    if (!name.trim()) return
+  // Reserva o nome: dois usuários diferentes não podem estar logados com o mesmo nome.
+  // Várias abas da mesma pessoa (mesmo userId) são permitidas.
+  const claimName = async nm => {
+    const key = nameKey(nm)
+    const connId = connIdRef.current
+    const lockRef = dbRef(db, `nameLocks/${key}`)
+    const res = await runTransaction(lockRef, cur => {
+      const o = cur || {}
+      if (Object.values(o).some(v => v !== userId)) return // nome em uso por outra pessoa: aborta
+      return { ...o, [connId]: userId }
+    })
+    if (res.committed) {
+      onDisconnect(dbRef(db, `nameLocks/${key}/${connId}`)).remove().catch(() => {})
+    }
+    return res.committed
+  }
+
+  // Mesma ideia do nome: um avatar só pode estar em uso por uma pessoa (várias abas da mesma pessoa ok)
+  const claimAvatar = async id => {
+    if (!id) return true
+    const connId = connIdRef.current
+    const lockRef = dbRef(db, `avatarLocks/${avatarKey(id)}`)
+    const res = await runTransaction(lockRef, cur => {
+      const o = cur || {}
+      if (Object.values(o).some(v => v !== userId)) return
+      return { ...o, [connId]: userId }
+    })
+    if (res.committed) {
+      onDisconnect(dbRef(db, `avatarLocks/${avatarKey(id)}/${connId}`)).remove().catch(() => {})
+    }
+    return res.committed
+  }
+
+  const handleJoin = async () => {
+    if (!name.trim() || claiming) return
+    setNameError('')
+    setClaiming(true)
+    try {
+      const ok = await claimName(name.trim())
+      if (!ok) {
+        setNameError('Este nome já está em uso por outra pessoa. Escolha outro.')
+        setClaiming(false)
+        return
+      }
+      const avOk = await claimAvatar(avatar)
+      if (!avOk) {
+        remove(dbRef(db, `nameLocks/${nameKey(name.trim())}/${connIdRef.current}`)).catch(() => {})
+        setAvatar(null)
+        setNameError('Este avatar já está em uso por outra pessoa. Escolha outro.')
+        setClaiming(false)
+        return
+      }
+    } catch (err) {
+      console.error(err)
+      // Sem conseguir verificar (ex.: regras do banco), não impede a entrada
+    }
+    setClaiming(false)
     const admin = adminCode.trim() === ADMIN_CODE
-    saveSession(userId, name.trim(), admin)
+    saveSession(userId, name.trim(), admin, avatar)
     setIsAdmin(admin)
     joinTimeRef.current = Date.now()
     knownIdsRef.current = messages.length > 0
@@ -1005,6 +1111,7 @@ export default function App() {
     setJoined(false)
     setIsAdmin(false)
     setName('')
+    setAvatar(null)
     setAdminCode('')
     setShowAdminInput(false)
     setShowOnline(false)
@@ -1228,6 +1335,24 @@ export default function App() {
     }
   }, [userId])
 
+  // Na tela de login: quais avatares já estão em uso por outras pessoas
+  useEffect(() => {
+    if (joined) return
+    const off = onValue(
+      dbRef(db, 'avatarLocks'),
+      snap => {
+        const taken = new Set()
+        Object.entries(snap.val() || {}).forEach(([k, conns]) => {
+          if (Object.values(conns || {}).some(u => u !== userId)) taken.add(k)
+        })
+        setTakenAvatars(taken)
+        setAvatar(cur => (cur && taken.has(avatarKey(cur)) ? null : cur))
+      },
+      () => {},
+    )
+    return () => off()
+  }, [joined, userId])
+
   // Presença real: cada aba logada registra uma conexão em presence/{uid}/{connId}; o servidor
   // remove sozinho (onDisconnect) ao fechar a aba/perder a conexão. Foco da aba não importa.
   useEffect(() => {
@@ -1236,19 +1361,53 @@ export default function App() {
       return
     }
     const connRef = dbRef(db, `presence/${userId}/${connIdRef.current}`)
+    const lockKey = nameKey(nameRef.current)
+    const lockAvatar = avatarRef.current
     const offConn = onValue(dbRef(db, '.info/connected'), snap => {
       if (snap.val() !== true) return
-      onDisconnect(connRef).remove()
-        .then(() => set(connRef, { name: nameRef.current, ts: Date.now() }))
+      // reafirma a reserva do nome (sessão restaurada ou reconexão); se outra pessoa tomou, sai
+      claimName(nameRef.current).then(ok => {
+        if (!ok) {
+          handleExit()
+          setNameError('Este nome já está em uso por outra pessoa. Escolha outro.')
+          return
+        }
+        return claimAvatar(avatarRef.current).then(avOk => {
+          if (!avOk) {
+            handleExit()
+            setNameError('Este avatar já está em uso por outra pessoa. Escolha outro.')
+          }
+        })
+      }).catch(() => {})
+      get(dbRef(db, 'presence'))
+        .then(snap => {
+          const used = new Set()
+          Object.entries(snap.val() || {}).forEach(([u, conns]) => {
+            if (u === userId) return
+            const c = Object.values(conns || {})[0]?.color
+            if (c) used.add(c)
+          })
+          if (!myColorRef.current || used.has(myColorRef.current)) {
+            myColorRef.current = pickFreeColor(nameRef.current, used)
+          }
+        })
+        .catch(() => { if (!myColorRef.current) myColorRef.current = userColor(nameRef.current) })
+        .then(() => onDisconnect(connRef).remove())
+        .then(() => set(connRef, { name: nameRef.current, ts: Date.now(), color: myColorRef.current, ...(avatarRef.current ? { avatar: avatarRef.current } : {}) }))
         .catch(() => {})
     })
     const offList = onValue(
       dbRef(db, 'presence'),
       snap => {
         const val = snap.val() || {}
-        const names = Object.values(val)
-          .map(conns => Object.values(conns || {})[0]?.name)
-          .filter(Boolean)
+        const entries = Object.values(val).map(conns => Object.values(conns || {})[0]).filter(e => e?.name)
+        const colors = {}
+        entries.forEach(e => { if (e.color) colors[String(e.name).trim().toLowerCase()] = e.color })
+        setPresenceColors(colors)
+        const avs = {}
+        entries.forEach(e => { if (e.avatar) avs[String(e.name).trim().toLowerCase()] = e.avatar })
+        setPresenceAvatars(avs)
+        const names = entries.map(e => e.name)
         setOnlineUsers(names.length ? names : [nameRef.current])
       },
       () => setOnlineUsers([nameRef.current]),
@@ -1258,11 +1417,19 @@ export default function App() {
       offList()
       onDisconnect(connRef).cancel().catch(() => {})
       remove(connRef).catch(() => {})
+      remove(dbRef(db, `nameLocks/${lockKey}/${connIdRef.current}`)).catch(() => {})
+      if (lockAvatar) remove(dbRef(db, `avatarLocks/${avatarKey(lockAvatar)}/${connIdRef.current}`)).catch(() => {})
     }
   }, [joined, userId])
 
   // Rola ao fim quando chega mensagem nova — mas só se você já está no fim ou foi você quem enviou;
   // caso contrário mostra o botão "ir para o fim" com o contador de novas
+  // Atualiza o registro de cores a cada render (mensagens antigas primeiro, presença por cima)
+  messages.forEach(m => { if (m.color && m.name) COLOR_REGISTRY.set(String(m.name).trim().toLowerCase(), m.color) })
+  Object.entries(presenceColors).forEach(([n, c]) => COLOR_REGISTRY.set(n, c))
+  messages.forEach(m => { if (m.avatar && m.name) AVATAR_REGISTRY.set(String(m.name).trim().toLowerCase(), m.avatar) })
+  Object.entries(presenceAvatars).forEach(([n, a]) => AVATAR_REGISTRY.set(n, a))
+
   const lastMsg = messages[messages.length - 1]
   const lastMsgId = lastMsg?.id
   useEffect(() => {
@@ -1444,6 +1611,9 @@ export default function App() {
         name,
         text: collapseChatLineBreaks(input).trim(),
         ts: Date.now(),
+        ...(myColorRef.current ? { color: myColorRef.current } : {}),
+        ...(avatarRef.current ? { avatar: avatarRef.current } : {}),
+        ...(avatarRef.current ? { avatar: avatarRef.current } : {}),
         file: pendingFile || null,
         ...(replyingTo ? { replyTo: replyingTo } : {}),
       })
@@ -1527,6 +1697,8 @@ export default function App() {
           const ext = type.includes('mp4') ? 'm4a' : 'webm'
           await push(dbRef(db, 'messages'), {
             uid: userId, name, text: '', ts: Date.now(),
+            ...(myColorRef.current ? { color: myColorRef.current } : {}),
+            ...(avatarRef.current ? { avatar: avatarRef.current } : {}),
             file: { name: `audio.${ext}`, size: blob.size, type, dataUrl, duration: Math.round(duration) },
             ...(replyingTo ? { replyTo: replyingTo } : {}),
           }).then(ref => setSentIds(prev => new Set([...prev, ref.key])))
@@ -1785,13 +1957,43 @@ export default function App() {
       <div style={s.loginOuter}>
         <div style={s.loginCard}>
           <Logo size="lg" />
-          <p style={s.loginSub}>Entre com seu nome para começar</p>
+          <p style={s.loginSub}>Escolha seu avatar e entre com seu nome para começar</p>
+          {AVATARS.length > 0 && (
+            <div style={s.avatarPicker} role="radiogroup" aria-label="Escolha seu avatar">
+              {AVATARS.map(a => {
+                const taken = takenAvatars.has(avatarKey(a.id))
+                return (
+                <button
+                  type="button"
+                  key={a.id}
+                  role="radio"
+                  aria-checked={avatar === a.id}
+                  aria-disabled={taken}
+                  disabled={taken}
+                  title={taken ? 'Avatar em uso' : undefined}
+                  aria-label={`Avatar ${a.id.replace(/\.[^.]+$/, '')}${taken ? ' (em uso)' : ''}`}
+                  onClick={() => { setNameError(''); setAvatar(cur => (cur === a.id ? null : a.id)) }}
+                  style={{
+                    ...s.avatarOption,
+                    ...(taken ? { cursor: 'not-allowed', filter: 'grayscale(1)', opacity: 0.3 } : null),
+                    borderColor: avatar === a.id ? '#FFD700' : 'rgba(255,255,255,0.18)',
+                    boxShadow: avatar === a.id ? '0 0 0 2px rgba(255,215,0,0.45), 0 0 14px rgba(255,215,0,0.3)' : 'none',
+                    ...(taken ? null : { opacity: avatar && avatar !== a.id ? 0.55 : 1 }),
+                  }}
+                >
+                  <img src={a.url} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+                </button>
+                )
+              })}
+            </div>
+          )}
           <input
             style={s.nameInput} placeholder="Seu nome..." value={name}
-            onChange={e => setName(e.target.value)}
+            onChange={e => { setName(e.target.value); setNameError('') }}
             onKeyDown={e => e.key === 'Enter' && name.trim() && handleJoin()}
             autoFocus
           />
+          {nameError && <p role="alert" style={{ color: '#f87171', fontSize: 13, textAlign: 'center', margin: 0 }}>{nameError}</p>}
           {showAdminInput && (
             <input
               style={{ ...s.nameInput, borderColor: 'rgba(212,175,55,0.5)' }}
@@ -1803,9 +2005,9 @@ export default function App() {
             />
           )}
           <button
-            style={{ ...s.joinBtn, opacity: name.trim() ? 1 : 0.35 }}
-            disabled={!name.trim()} onClick={handleJoin}
-          >Entrar</button>
+            style={{ ...s.joinBtn, opacity: name.trim() && !claiming ? 1 : 0.35 }}
+            disabled={!name.trim() || claiming} onClick={handleJoin}
+          >{claiming ? 'Entrando…' : 'Entrar'}</button>
           <button
             style={s.adminToggleBtn}
             onClick={() => setShowAdminInput(v => !v)}
@@ -1960,7 +2162,9 @@ export default function App() {
                             }}
                             aria-label={m.name ? `Avatar: ${m.name}` : 'Avatar'}
                           >
-                            {nameInitial(m.name)}
+                            {avatarOf(m.name)
+                              ? <img src={avatarOf(m.name)} alt="" draggable={false} className="chatMsgAvatarImg" />
+                              : nameInitial(m.name)}
                           </div>
                         ) : (
                           <div className="chatMsgAvatarSpacer" aria-hidden />
@@ -2395,6 +2599,8 @@ const css = `
     border: 2px solid;
     flex-shrink: 0;
   }
+  .chatMsgAvatar { overflow: hidden; }
+  .chatMsgAvatarImg { width: 100%; height: 100%; object-fit: cover; display: block; }
   .chatMsgAvatarSpacer {
     width: 34px;
     height: 34px;
@@ -2707,6 +2913,14 @@ const s = {
   loginLogo: { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 },
   loginTitle: { fontSize: 26, fontWeight: 700, color: GOLD, letterSpacing: '0.02em' },
   loginSub: { fontSize: 14, color: 'rgba(255,255,255,0.35)', textAlign: 'center' },
+  avatarPicker: {
+    width: '100%', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(56px, 1fr))', gap: 10,
+    justifyItems: 'center', maxHeight: 190, overflowY: 'auto', padding: 4,
+  },
+  avatarOption: {
+    width: 56, height: 56, padding: 0, borderRadius: '50%', border: '2px solid',
+    background: '#111', overflow: 'hidden', cursor: 'pointer', transition: 'opacity .15s, box-shadow .15s, border-color .15s',
+  },
   nameInput: {
     width: '100%', background: '#0d0d0d', border: `1.5px solid ${GOLD_DIM}`, borderRadius: 12,
     padding: '13px 16px', color: '#fff', fontSize: 16, outline: 'none', fontFamily: 'inherit',
