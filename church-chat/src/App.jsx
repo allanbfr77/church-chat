@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { db } from './firebase'
-import { AVATARS, avatarUrl } from './avatars'
+import { AVATARS, avatarUrl, INITIAL_AVATAR } from './avatars'
 import {
   ref as dbRef,
   push,
@@ -807,7 +807,7 @@ export default function App() {
   const stored = getStoredSession()
   const [userId]      = useState(() => stored?.userId || uid())
   const [name, setName]               = useState(stored?.name || '')
-  const [avatar, setAvatar]           = useState(() => (avatarUrl(stored?.avatar) ? stored.avatar : null))
+  const [avatar, setAvatar]           = useState(() => (avatarUrl(stored?.avatar) || stored?.avatar === INITIAL_AVATAR ? stored.avatar : null))
   const avatarRef = useRef(avatar)
   avatarRef.current = avatar
   const [joined, setJoined]           = useState(!!stored?.name)
@@ -1074,7 +1074,7 @@ export default function App() {
 
   // Mesma ideia do nome: um avatar só pode estar em uso por uma pessoa (várias abas da mesma pessoa ok)
   const claimAvatar = async id => {
-    if (!id) return true
+    if (!id || id === INITIAL_AVATAR) return true
     const connId = connIdRef.current
     const lockRef = dbRef(db, `avatarLocks/${avatarKey(id)}`)
     const res = await runTransaction(lockRef, cur => {
@@ -1481,6 +1481,42 @@ export default function App() {
     setNewMsgCount(0)
     setShowJump(false)
   }
+
+  // Teclado virtual estilo WhatsApp: a página acompanha a área visível (visualViewport),
+  // o header fica parado, só a lista de mensagens encolhe e continua no fim.
+  useEffect(() => {
+    const vv = window.visualViewport
+    const root = document.documentElement
+    let lastH = vv ? vv.height : window.innerHeight
+    const sync = () => {
+      const h = vv ? vv.height : window.innerHeight
+      const top = vv ? vv.offsetTop : 0
+      root.style.setProperty('--app-h', `${h}px`)
+      root.style.setProperty('--app-top', `${top}px`)
+      if (window.scrollX || window.scrollY) window.scrollTo(0, 0)
+      if (h < lastH && atBottomRef.current) {
+        requestAnimationFrame(() => bottomRef.current?.scrollIntoView({ behavior: 'auto' }))
+      }
+      lastH = h
+    }
+    sync()
+    if (vv) {
+      vv.addEventListener('resize', sync)
+      vv.addEventListener('scroll', sync)
+    }
+    window.addEventListener('resize', sync)
+    window.addEventListener('scroll', sync)
+    return () => {
+      if (vv) {
+        vv.removeEventListener('resize', sync)
+        vv.removeEventListener('scroll', sync)
+      }
+      window.removeEventListener('resize', sync)
+      window.removeEventListener('scroll', sync)
+      root.style.removeProperty('--app-h')
+      root.style.removeProperty('--app-top')
+    }
+  }, [])
 
   // Recibos: marca como entregue ao receber e como lida quando a aba está visível
   useEffect(() => {
@@ -1978,7 +2014,7 @@ export default function App() {
         <div style={s.loginCard}>
           <Logo size="lg" />
           <p style={s.loginSub}>Escolha seu avatar e entre com seu nome para começar</p>
-          {AVATARS.length > 0 && (
+          {(
             <div style={s.avatarPicker} role="radiogroup" aria-label="Escolha seu avatar">
               {AVATARS.map(a => {
                 const taken = takenAvatars.has(avatarKey(a.id))
@@ -2005,6 +2041,26 @@ export default function App() {
                 </button>
                 )
               })}
+              <button
+                type="button"
+                role="radio"
+                aria-checked={avatar === INITIAL_AVATAR}
+                title="Usar a inicial do meu nome"
+                aria-label="Usar a inicial do meu nome"
+                onClick={() => { setNameError(''); setAvatar(cur => (cur === INITIAL_AVATAR ? null : INITIAL_AVATAR)) }}
+                style={{
+                  ...s.avatarOption,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontFamily: 'inherit', fontSize: name.trim() ? 24 : 17, fontWeight: 800, letterSpacing: name.trim() ? 0 : '-0.02em',
+                  color: userColor(name.trim()),
+                  background: `${userColor(name.trim())}18`,
+                  borderColor: avatar === INITIAL_AVATAR ? '#FFD700' : 'rgba(255,255,255,0.18)',
+                  boxShadow: avatar === INITIAL_AVATAR ? '0 0 0 2px rgba(255,215,0,0.45), 0 0 14px rgba(255,215,0,0.3)' : 'none',
+                  opacity: avatar && avatar !== INITIAL_AVATAR ? 0.55 : 1,
+                }}
+              >
+                {name.trim() ? nameInitial(name) : 'ABC'}
+              </button>
             </div>
           )}
           <input
@@ -2570,7 +2626,8 @@ export default function App() {
 const css = `
   @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=Bebas+Neue&display=swap');
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  html, body { margin: 0; padding: 0; overflow: hidden; }
+  html, body { margin: 0; padding: 0; overflow: hidden; overscroll-behavior: none; }
+  body { position: fixed; inset: 0; width: 100%; }
   ::-webkit-scrollbar { width: 4px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: rgba(212,175,55,0.2); border-radius: 2px; }
@@ -2922,7 +2979,7 @@ const GOLD_DIM = 'rgba(212,175,55,0.25)'
 const GOLD_FAINT = 'rgba(212,175,55,0.08)'
 
 const s = {
-  page: { position: 'fixed', inset: 0, display: 'flex', flexDirection: 'column', background: '#000', isolation: 'isolate', fontFamily: "'Outfit', system-ui, sans-serif", color: '#e8e8ee' },
+  page: { position: 'fixed', top: 0, left: 0, right: 0, height: 'var(--app-h, 100dvh)', transform: 'translateY(var(--app-top, 0px))', display: 'flex', flexDirection: 'column', background: '#000', isolation: 'isolate', fontFamily: "'Outfit', system-ui, sans-serif", color: '#e8e8ee' },
   bgBlur: { position: 'fixed', inset: 0, backgroundImage: 'url(/images/image.png)', backgroundSize: 'cover', backgroundPosition: 'center', filter: 'blur(2px)', transform: 'scale(1.04)', opacity: 0.62, zIndex: -1, pointerEvents: 'none' },
 
   // Login
