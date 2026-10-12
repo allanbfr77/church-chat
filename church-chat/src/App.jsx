@@ -2116,6 +2116,7 @@ export default function App() {
               {clearing ? '⏳' : '🗑️ Limpar chat'}
             </button>
           )}
+          <span style={s.versionTag}>v{__APP_VERSION__}</span>
           <button style={s.onlineBtn} onClick={() => setShowOnline(v => !v)}>
             <span style={s.dot} />
             <span style={s.onlineCount}>{onlineUsers.length} online</span>
@@ -3009,6 +3010,7 @@ const s = {
   },
 
   // Header — respeita entalhe / Dynamic Island / barra de status (iOS + viewport-fit=cover)
+  versionTag: { fontSize: 11, color: 'rgba(255,255,255,0.45)', whiteSpace: 'nowrap', flexShrink: 0 },
   header: {
     display: 'flex', alignItems: 'center', justifyContent: 'space-between',
     paddingTop: 'max(10px, env(safe-area-inset-top, 0px))',
