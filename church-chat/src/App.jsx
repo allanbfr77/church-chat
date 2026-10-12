@@ -125,6 +125,22 @@ function linkifyText(text) {
   return out
 }
 
+const REACTION_EMOJIS = ['👍', '❤️', '🙏', '😂', '😮', '✅']
+
+// Resumo curto da mensagem para citação (preserva mesmo se a original for apagada)
+function replySnippet(m) {
+  const t = collapseChatLineBreaks(m.text || '').trim()
+  if (t) return t.length > 90 ? `${t.slice(0, 90)}…` : t
+  return m.file ? (fileLooksLikeImage(m.file, m.file.dataUrl || m.file.url) ? 'Imagem' : (m.file.name || 'Arquivo')) : ''
+}
+
+const GROUP_GAP_MS = 5 * 60 * 1000
+// Mensagens seguidas da mesma pessoa (com menos de 5 min entre elas) formam um grupo
+function sameMsgGroup(a, b) {
+  return !!a && !!b && !messageIsTombstone(a) && !messageIsTombstone(b)
+    && a.uid === b.uid && Math.abs((b.ts || 0) - (a.ts || 0)) < GROUP_GAP_MS
+}
+
 function collapseChatLineBreaks(str) {
   return String(str ?? '').replace(/\r\n|\r|\n/g, ' ')
 }
@@ -675,6 +691,10 @@ export default function App() {
   /** Chrome/Edge Android: evento nativo “Instalar app” */
   const [pwaInstallDeferred, setPwaInstallDeferred] = useState(null)
   const [showEmojiPicker, setShowEmojiPicker] = useState(false)
+  const [showPlusMenu, setShowPlusMenu] = useState(false)
+  const [replyingTo, setReplyingTo] = useState(null)   // { id, name, text }
+  const [msgMenuId, setMsgMenuId] = useState(null)     // mensagem com menu (reagir / responder) aberto
+  const longPressRef = useRef(null)
   /** Snapshot bruto de `typing/` (reavaliado no relógio para sumir entradas velhas sem novo evento) */
   const [typingSnap, setTypingSnap]     = useState(null)
   const [typingUsers, setTypingUsers]   = useState([])
@@ -1131,24 +1151,43 @@ export default function App() {
     setOnlineUsers(Array.from(userMap.values()))
   }, [joined, messages, userId, name])
 
+  // Rola ao fim só quando chega mensagem nova (reações/edições não devem mover a rolagem)
+  const lastMsgId = messages[messages.length - 1]?.id
   useEffect(() => {
     if (!joined) return
     bottomRef.current?.scrollIntoView({
       behavior: messagesScrollInitRef.current ? 'smooth' : 'auto',
     })
     if (messages.length > 0) messagesScrollInitRef.current = true
-  }, [messages, joined])
+  }, [lastMsgId, messages.length, joined])
 
   useEffect(() => {
-    if (!showEmojiPicker) return
+    if (!showEmojiPicker && !showPlusMenu) return
     const close = e => {
       if (emojiPickerRef.current && !emojiPickerRef.current.contains(e.target)) {
         setShowEmojiPicker(false)
+        setShowPlusMenu(false)
       }
     }
     document.addEventListener('mousedown', close)
     return () => document.removeEventListener('mousedown', close)
-  }, [showEmojiPicker])
+  }, [showEmojiPicker, showPlusMenu])
+
+  useEffect(() => {
+    if (!msgMenuId) return
+    const close = e => {
+      if (!e.target.closest?.('[data-msg-menu]')) setMsgMenuId(null)
+    }
+    const onKey = e => { if (e.key === 'Escape') setMsgMenuId(null) }
+    document.addEventListener('mousedown', close)
+    document.addEventListener('touchstart', close, { passive: true })
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', close)
+      document.removeEventListener('touchstart', close)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [msgMenuId])
 
   // Presença em `typing/`: limpar ao cair conexão; remover entrada ao sair da sala
   useEffect(() => {
@@ -1240,10 +1279,12 @@ export default function App() {
         text: collapseChatLineBreaks(input).trim(),
         ts: Date.now(),
         file: pendingFile || null,
+        ...(replyingTo ? { replyTo: replyingTo } : {}),
       })
       setSentIds(prev => new Set([...prev, msgRef.key]))
       setInput('')
       setPendingFile(null)
+      setReplyingTo(null)
       messageInputRef.current?.focus()
     } catch (err) {
       console.error(err)
@@ -1277,6 +1318,40 @@ export default function App() {
   }
 
   const canSend = (input.trim() || pendingFile) && !sending && !reading
+
+  const startReply = m => {
+    if (messageIsTombstone(m)) return
+    setReplyingTo({ id: m.id, name: m.name || 'Alguém', text: replySnippet(m) })
+    setMsgMenuId(null)
+    messageInputRef.current?.focus()
+  }
+
+  const toggleReaction = async (m, emoji) => {
+    setMsgMenuId(null)
+    if (messageIsTombstone(m)) return
+    const r = dbRef(db, `messages/${m.id}/reactions/${userId}`)
+    try {
+      if (m.reactions?.[userId] === emoji) await remove(r)
+      else await set(r, emoji)
+    } catch (e) {
+      console.error(e)
+      setFileError('Não foi possível reagir à mensagem.')
+    }
+  }
+
+  const jumpToMessage = id => {
+    const el = document.getElementById(`msg-${id}`)
+    if (!el) return
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    el.classList.add('chatMsgRow--flash')
+    window.setTimeout(() => el.classList.remove('chatMsgRow--flash'), 1400)
+  }
+
+  const startLongPress = m => {
+    window.clearTimeout(longPressRef.current)
+    longPressRef.current = window.setTimeout(() => setMsgMenuId(m.id), 450)
+  }
+  const cancelLongPress = () => window.clearTimeout(longPressRef.current)
 
   const startEdit = m => {
     if (m.uid !== userId || messageIsTombstone(m) || m.editedOnce) return
@@ -1569,7 +1644,9 @@ export default function App() {
               }
 
               const mine     = m.uid === userId
-              const showName = !mine && (i === 0 || messages[i - 1]?.uid !== m.uid)
+              const isFirst  = !sameMsgGroup(messages[i - 1], m)
+              const isLast   = !sameMsgGroup(m, messages[i + 1])
+              const showName = !mine && isFirst
               const sent     = mine && sentIds.has(m.id)
               const isEditing = editingId === m.id
               const busy     = msgActionBusy === m.id
@@ -1580,7 +1657,8 @@ export default function App() {
               return (
                 <div
                   key={m.id}
-                  className={`chatMsgRow ${mine ? 'chatMsgRow--sent' : 'chatMsgRow--recv'}`}
+                  id={`msg-${m.id}`}
+                  className={`chatMsgRow ${mine ? 'chatMsgRow--sent' : 'chatMsgRow--recv'} ${isFirst ? 'chatMsgRow--first' : ''}`}
                 >
                   <div className="chatMsgGroup">
                     {!mine && (
@@ -1603,14 +1681,26 @@ export default function App() {
                         )}
                       </div>
                     )}
-                    <div className={`chatMsgStack ${mine ? 'chatMsgStack--sent' : 'chatMsgStack--recv'}`}>
+                    <div
+                      className={`chatMsgStack ${mine ? 'chatMsgStack--sent' : 'chatMsgStack--recv'}`}
+                      data-msg-menu
+                      onContextMenu={e => {
+                        if (isEditing) return
+                        e.preventDefault()
+                        setMsgMenuId(m.id)
+                      }}
+                      onTouchStart={() => { if (!isEditing) startLongPress(m) }}
+                      onTouchMove={cancelLongPress}
+                      onTouchEnd={cancelLongPress}
+                      onTouchCancel={cancelLongPress}
+                    >
                       {showName && !mine && (
                         <div className="chatMsgAuthor" style={{ color: userColor(m.name || '') }}>
                           {m.name}
                         </div>
                       )}
                       <div
-                        className={`chatMsgBubble ${mine ? 'chatMsgBubble--sent' : 'chatMsgBubble--recv'}`}
+                        className={`chatMsgBubble ${mine ? 'chatMsgBubble--sent' : 'chatMsgBubble--recv'} ${isFirst ? 'chatMsgBubble--first' : ''}`}
                         style={!mine && peerColor ? { ['--chat-accent']: peerColor } : undefined}
                       >
                         <div className="chatMsgBody">
@@ -1642,6 +1732,18 @@ export default function App() {
                             </div>
                           ) : (
                             <>
+                              {m.replyTo && (
+                                <button
+                                  type="button"
+                                  className="chatMsgQuote"
+                                  style={{ ['--quote-color']: userColor(m.replyTo.name || '') }}
+                                  onClick={() => jumpToMessage(m.replyTo.id)}
+                                  title="Ir para a mensagem original"
+                                >
+                                  <span className="chatMsgQuoteName">{m.replyTo.name}</span>
+                                  <span className="chatMsgQuoteText">{m.replyTo.text || 'Mensagem'}</span>
+                                </button>
+                              )}
                               {m.file && <FilePreview file={m.file} mine={mine} />}
                               {m.text && (
                                 <div className="chatMsgText">{linkifyText(collapseChatLineBreaks(m.text))}</div>
@@ -1650,15 +1752,70 @@ export default function App() {
                             </>
                           )}
                         </div>
-                        {!isEditing && (
+                        {!isEditing && (isLast || mine) && (
                           <div className="chatMsgMeta">
-                            <span>{timeStr(m.ts)}</span>
+                            {isLast && <span>{timeStr(m.ts)}</span>}
                             {mine && (
                               <span className={sent ? 'check-on chatMsgCheck' : 'check-off chatMsgCheck'}>✓</span>
                             )}
                           </div>
                         )}
+                        {!isEditing && (
+                          <button
+                            type="button"
+                            className="chatMsgMore"
+                            aria-label="Reagir ou responder"
+                            title="Reagir ou responder"
+                            onClick={() => setMsgMenuId(id => (id === m.id ? null : m.id))}
+                          >
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                              <circle cx="12" cy="12" r="9" /><path d="M8 14s1.5 2 4 2 4-2 4-2" /><path d="M9 9h.01" /><path d="M15 9h.01" />
+                            </svg>
+                          </button>
+                        )}
                       </div>
+                      {m.reactions && Object.keys(m.reactions).length > 0 && (() => {
+                        const counts = {}
+                        Object.values(m.reactions).forEach(e => { counts[e] = (counts[e] || 0) + 1 })
+                        return (
+                          <div className="chatMsgReactions">
+                            {Object.entries(counts).map(([emo, n]) => (
+                              <button
+                                type="button"
+                                key={emo}
+                                className={`chatMsgReaction ${m.reactions[userId] === emo ? 'chatMsgReaction--mine' : ''}`}
+                                onClick={() => toggleReaction(m, emo)}
+                                aria-label={`Reação ${emo}, ${n}`}
+                              >
+                                <span>{emo}</span><span>{n}</span>
+                              </button>
+                            ))}
+                          </div>
+                        )
+                      })()}
+                      {msgMenuId === m.id && !isEditing && (
+                        <div className={`chatMsgMenu ${mine ? 'chatMsgMenu--sent' : ''}`} role="menu">
+                          <div className="chatMsgMenuEmojis">
+                            {REACTION_EMOJIS.map(emo => (
+                              <button
+                                type="button"
+                                key={emo}
+                                className={`chatMsgMenuEmoji ${m.reactions?.[userId] === emo ? 'chatMsgMenuEmoji--on' : ''}`}
+                                onClick={() => toggleReaction(m, emo)}
+                                aria-label={`Reagir com ${emo}`}
+                              >
+                                {emo}
+                              </button>
+                            ))}
+                          </div>
+                          <button type="button" role="menuitem" className="chatMsgMenuItem" onClick={() => startReply(m)}>
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                              <path d="M9 14 4 9l5-5" /><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5v0a5.5 5.5 0 0 1-5.5 5.5H11" />
+                            </svg>
+                            Responder
+                          </button>
+                        </div>
+                      )}
                       {mine && !isEditing && (
                         <div className="chatMsgActions">
                           {canEditMine && (
@@ -1728,18 +1885,52 @@ export default function App() {
             </div>
           )}
 
+          {replyingTo && (
+            <div style={s.replyBar} role="status">
+              <div style={{ flex: 1, minWidth: 0, borderLeft: `3px solid ${userColor(replyingTo.name)}`, paddingLeft: 10 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: userColor(replyingTo.name) }}>
+                  Respondendo a {replyingTo.name}
+                </div>
+                <div style={s.replyBarText}>{replyingTo.text || 'Mensagem'}</div>
+              </div>
+              <button type="button" style={s.removePending} onClick={() => setReplyingTo(null)} aria-label="Cancelar resposta">✕</button>
+            </div>
+          )}
+
           <div style={s.inputBar}>
             <div ref={emojiPickerRef} style={s.emojiPickerWrap}>
               <button
                 type="button"
-                style={{ ...s.attachBtn, fontSize: 20 }}
-                onClick={() => { setShowEmojiPicker(v => !v) }}
-                title="Emoticons"
-                aria-expanded={showEmojiPicker}
+                style={s.attachBtn}
+                onClick={() => { setShowEmojiPicker(false); setShowPlusMenu(v => !v) }}
+                title="Emoji e anexos"
+                aria-label="Emoji e anexos"
+                aria-expanded={showPlusMenu || showEmojiPicker}
                 aria-haspopup="true"
               >
-                😊
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"
+                  style={{ transition: 'transform .15s', transform: (showPlusMenu || showEmojiPicker) ? 'rotate(45deg)' : 'none' }}>
+                  <path d="M12 5v14" /><path d="M5 12h14" />
+                </svg>
               </button>
+              {showPlusMenu && (
+                <div style={s.plusMenu} role="menu">
+                  <button type="button" role="menuitem" style={s.plusMenuItem}
+                    onClick={() => { setShowPlusMenu(false); setShowEmojiPicker(true) }}>
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <circle cx="12" cy="12" r="9" /><path d="M8 14s1.5 2 4 2 4-2 4-2" /><path d="M9 9h.01" /><path d="M15 9h.01" />
+                    </svg>
+                    Emoji
+                  </button>
+                  <button type="button" role="menuitem" style={s.plusMenuItem} disabled={reading}
+                    onClick={() => { setShowPlusMenu(false); fileRef.current?.click() }}>
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="m21 11.5-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.7 3.7 0 0 1 5.2 5.2l-8.6 8.6a1.8 1.8 0 0 1-2.6-2.6l7.9-7.9" />
+                    </svg>
+                    {reading ? 'Carregando…' : 'Anexar arquivo'}
+                  </button>
+                </div>
+              )}
               {showEmojiPicker && (
                 <div style={s.emojiPopover} role="listbox" aria-label="Emoticons">
                   {EMOJI_PALETTE.map((emo, i) => (
@@ -1758,14 +1949,6 @@ export default function App() {
                 </div>
               )}
             </div>
-            <button
-              style={s.attachBtn}
-              onClick={() => fileRef.current?.click()}
-              title="Anexar arquivo (máx 10MB)"
-              disabled={reading}
-            >
-              {reading ? '⏳' : '📎'}
-            </button>
             <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={handleFileChange} />
             <input
               type="text"
@@ -1782,10 +1965,19 @@ export default function App() {
               onKeyDown={handleKey}
             />
             <button
-              style={{ ...s.sendBtn, opacity: canSend ? 1 : 0.3 }}
+              aria-label="Enviar"
+              style={{
+                ...s.sendBtn,
+                opacity: canSend ? 1 : 0.4,
+                boxShadow: canSend ? '0 0 14px rgba(255,215,0,0.35)' : 'none',
+              }}
               onClick={send} disabled={!canSend}
             >
-              {sending ? '…' : '➤'}
+              {sending ? '…' : (
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M22 2 11 13" /><path d="M22 2 15 22l-4-9-9-4 20-7z" />
+                </svg>
+              )}
             </button>
           </div>
         </div>
@@ -1812,6 +2004,8 @@ const css = `
     width: 100%;
     padding: 1px 0;
   }
+  .chatMsgRow--first { margin-top: 10px; }
+  .chatMsgRow--first:first-child { margin-top: 0; }
   .chatMsgRow--sent { justify-content: flex-end; }
   .chatMsgRow--recv { justify-content: flex-start; }
 
@@ -1888,14 +2082,16 @@ const css = `
   .chatMsgBubble--sent {
     background: linear-gradient(135deg, #2a1f00, #3d2d00);
     border: 1px solid rgba(212,175,55,0.35);
-    border-radius: 18px 18px 4px 18px;
+    border-radius: 18px;
   }
+  .chatMsgBubble--sent.chatMsgBubble--first { border-radius: 18px 6px 18px 18px; }
   .chatMsgBubble--recv {
     background: #0d0d0d;
     border: 1px solid rgba(255,255,255,0.07);
     border-left: 4px solid var(--chat-accent, rgba(212,175,55,0.45));
-    border-radius: 18px 18px 18px 4px;
+    border-radius: 18px;
   }
+  .chatMsgBubble--recv.chatMsgBubble--first { border-radius: 6px 18px 18px 18px; }
 
   /* Área de conteúdo (texto + arquivo) */
   .chatMsgBody {
@@ -1923,7 +2119,7 @@ const css = `
   .chatMsgLink:hover { color: #bfe3ff; }
   .chatMsgEdited {
     font-size: 10px;
-    color: rgba(212,175,55,0.45);
+    color: rgba(212,175,55,0.75);
     margin-top: 4px;
     font-weight: 500;
   }
@@ -1943,7 +2139,7 @@ const css = `
     gap: 6px;
     margin-top: 6px;
     font-size: 10px;
-    color: rgba(255,255,255,0.32);
+    color: rgba(255,255,255,0.62);
     line-height: 1.2;
     white-space: nowrap;
     width: 0;
@@ -1955,6 +2151,84 @@ const css = `
     color: #D4AF37;
     line-height: 1;
   }
+
+  /* Citação (resposta) */
+  .chatMsgQuote {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1px;
+    width: 100%;
+    margin: 0 0 6px;
+    padding: 5px 9px;
+    background: rgba(255,255,255,0.07);
+    border: none;
+    border-left: 3px solid var(--quote-color, #D4AF37);
+    border-radius: 6px;
+    text-align: left;
+    font-family: inherit;
+    cursor: pointer;
+    min-width: 0;
+  }
+  .chatMsgQuoteName { font-size: 12px; font-weight: 600; color: var(--quote-color, #D4AF37); }
+  .chatMsgQuoteText {
+    font-size: 13px; color: rgba(255,255,255,0.72); line-height: 1.35;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    overflow-wrap: anywhere; text-align: left;
+  }
+  .chatMsgRow--flash .chatMsgBubble { animation: msgFlash 1.4s ease-out; }
+  @keyframes msgFlash {
+    0%, 30% { box-shadow: 0 0 0 2px rgba(255,215,0,0.7); }
+    100% { box-shadow: 0 0 0 2px rgba(255,215,0,0); }
+  }
+
+  /* Reações */
+  .chatMsgReactions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
+  .chatMsgReaction {
+    display: inline-flex; align-items: center; gap: 3px;
+    min-height: 28px; padding: 0 4px;
+    background: transparent; border: none;
+    color: rgba(255,255,255,0.75); font-size: 13px; font-family: inherit; cursor: pointer;
+  }
+  .chatMsgReaction > span:first-child { font-size: 18px; line-height: 1; }
+  .chatMsgReaction--mine { color: #FFD700; font-weight: 600; }
+
+  /* Menu da mensagem (reagir / responder) */
+  .chatMsgStack { position: relative; }
+  .chatMsgBubble { position: relative; }
+  .chatMsgMore {
+    position: absolute; top: 50%; transform: translateY(-50%);
+    width: 32px; height: 32px; padding: 0;
+    display: none; align-items: center; justify-content: center;
+    background: transparent; border: none; border-radius: 50%;
+    color: rgba(255,255,255,0.6); cursor: pointer; z-index: 2;
+  }
+  .chatMsgMore:hover { color: #FFD700; background: rgba(255,255,255,0.08); }
+  .chatMsgBubble--recv .chatMsgMore { left: 100%; }
+  .chatMsgBubble--sent .chatMsgMore { right: 100%; }
+  @media (hover: hover) and (pointer: fine) {
+    .chatMsgBubble:hover .chatMsgMore, .chatMsgStack:has(.chatMsgMenu) .chatMsgMore { display: flex; }
+  }
+  .chatMsgMenu {
+    position: absolute; bottom: calc(100% + 4px); left: 0; z-index: 30;
+    display: flex; flex-direction: column; gap: 2px; padding: 6px;
+    background: #16161c; border: 1px solid rgba(255,255,255,0.18); border-radius: 14px;
+    box-shadow: 0 12px 40px rgba(0,0,0,0.65);
+  }
+  .chatMsgMenu--sent { left: auto; right: 0; }
+  .chatMsgMenuEmojis { display: flex; gap: 2px; }
+  .chatMsgMenuEmoji {
+    width: 40px; height: 40px; padding: 0; font-size: 22px; line-height: 1;
+    background: transparent; border: none; border-radius: 10px; cursor: pointer;
+  }
+  .chatMsgMenuEmoji:hover, .chatMsgMenuEmoji--on { background: rgba(212,175,55,0.2); }
+  .chatMsgMenuItem {
+    display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 0 10px;
+    background: transparent; border: none; border-radius: 10px; color: #fff;
+    font-size: 15px; font-family: inherit; cursor: pointer; text-align: left;
+    border-top: 1px solid rgba(255,255,255,0.08);
+  }
+  .chatMsgMenuItem:hover { background: rgba(255,255,255,0.07); }
 
   /* Ações (editar / apagar) */
   .chatMsgActions {
@@ -1988,7 +2262,7 @@ const css = `
     100% { transform: scale(1); opacity: 1; }
   }
   input::placeholder { color: rgba(212,175,55,0.35); }
-  .chat-msg-input::placeholder { color: rgba(255,255,255,0.25); }
+  .chat-msg-input::placeholder { color: rgba(255,255,255,0.55); }
   input:focus { border-color: rgba(212,175,55,0.6) !important; box-shadow: 0 0 0 3px rgba(212,175,55,0.08); }
   .chat-msg-input:focus { border-color: rgba(212,175,55,0.5) !important; }
   button, [role="button"] {
@@ -2174,10 +2448,28 @@ const s = {
     flexShrink: 0, alignItems: 'center',
   },
   attachBtn: {
-    width: 42, height: 42, borderRadius: 12, background: GOLD_FAINT, border: `1px solid ${GOLD_DIM}`,
-    fontSize: 18, cursor: 'pointer', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+    width: 44, height: 44, borderRadius: 12, background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.22)',
+    color: '#e8e8ee', fontSize: 18, cursor: 'pointer', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+  },
+  replyBar: {
+    display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px',
+    background: 'rgba(22,22,28,0.9)', borderTop: '1px solid rgba(255,255,255,0.08)',
+  },
+  replyBarText: {
+    fontSize: 13, color: 'rgba(255,255,255,0.7)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
   },
   emojiPickerWrap: { position: 'relative', flexShrink: 0 },
+  plusMenu: {
+    position: 'absolute', bottom: 'calc(100% + 8px)', left: 0, zIndex: 50,
+    display: 'flex', flexDirection: 'column', gap: 2, padding: 6, minWidth: 190,
+    background: '#16161c', border: '1px solid rgba(255,255,255,0.18)', borderRadius: 14,
+    boxShadow: '0 12px 40px rgba(0,0,0,0.65)',
+  },
+  plusMenuItem: {
+    display: 'flex', alignItems: 'center', gap: 12, minHeight: 44, padding: '0 12px',
+    background: 'transparent', border: 'none', borderRadius: 10, color: '#fff',
+    fontSize: 15, fontFamily: 'inherit', cursor: 'pointer', textAlign: 'left',
+  },
   emojiPopover: {
     position: 'absolute', bottom: 'calc(100% + 8px)', left: 0, zIndex: 50,
     display: 'grid', gridTemplateColumns: 'repeat(8, minmax(0, 1fr))', gap: 4,
@@ -2201,15 +2493,15 @@ const s = {
     boxSizing: 'border-box',
   },
   chatMsgInput: {
-    flex: 1, minWidth: 0, background: '#0d0d0d', border: `1.5px solid rgba(255,255,255,0.08)`,
-    borderRadius: 12, padding: '10px 14px', color: '#fff', fontSize: 15,
+    flex: 1, minWidth: 0, background: '#16161c', border: `1.5px solid rgba(255,255,255,0.28)`,
+    borderRadius: 12, padding: '10px 14px', color: '#fff', fontSize: 15, height: 44,
     fontFamily: 'inherit', outline: 'none', lineHeight: 1.5, transition: 'border-color .2s',
     boxSizing: 'border-box',
   },
   sendBtn: {
-    width: 42, height: 42, borderRadius: 12,
+    width: 44, height: 44, borderRadius: 12,
     background: `linear-gradient(135deg, #C9A84C, #FFD700)`,
-    border: 'none', color: '#000', fontSize: 17, fontWeight: 700,
+    border: 'none', color: '#1a1300', transition: 'opacity .15s, box-shadow .15s', fontSize: 17, fontWeight: 700,
     cursor: 'pointer', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
   },
   hint: { textAlign: 'center', fontSize: 10, color: 'rgba(212,175,55,0.2)', padding: '4px 0 8px', background: '#050505', flexShrink: 0 },
