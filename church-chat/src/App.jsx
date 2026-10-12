@@ -2702,9 +2702,9 @@ export default function App() {
 const css = `
   @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=Bebas+Neue&display=swap');
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  html, body { margin: 0; padding: 0; overflow: hidden; overscroll-behavior: none; background: #000; }
-  /* Faixa do Safari abaixo da página: mesma cor da barra de mensagem, parece continuação dela */
-  html { background: linear-gradient(to bottom, #000 0 50%, #0e0e12 50% 100%) #000; }
+  /* Uma cor só pra tudo que encosta nas bordas: o Safari (iOS 26) pinta as faixas de cima e
+     de baixo com a cor do fundo da página, então header, barra de mensagem e faixas ficam iguais */
+  html, body { margin: 0; padding: 0; overflow: hidden; overscroll-behavior: none; background: #0e0e12; }
   body { position: fixed; inset: 0; width: 100%; }
   /* Sem seleção/cópia nativa do iOS: copiar só pelo menu do app */
   html, body, #root {
@@ -3079,7 +3079,7 @@ const GOLD_DIM = 'rgba(212,175,55,0.25)'
 const GOLD_FAINT = 'rgba(212,175,55,0.08)'
 
 const s = {
-  page: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, transform: 'translateY(var(--app-top, 0px))', display: 'flex', flexDirection: 'column', background: '#000', isolation: 'isolate', fontFamily: "'Outfit', system-ui, sans-serif", color: '#e8e8ee' },
+  page: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, transform: 'translateY(var(--app-top, 0px))', display: 'flex', flexDirection: 'column', background: '#0e0e12', isolation: 'isolate', fontFamily: "'Outfit', system-ui, sans-serif", color: '#e8e8ee' },
   bgBlur: { position: 'fixed', inset: 0, backgroundImage: 'url(/images/image.png)', backgroundSize: 'cover', backgroundPosition: 'center', filter: 'blur(2px)', transform: 'scale(1.04)', opacity: 0.62, zIndex: -1, pointerEvents: 'none' },
 
   // Login
@@ -3123,7 +3123,7 @@ const s = {
     paddingBottom: '10px',
     paddingLeft: 'max(14px, env(safe-area-inset-left, 0px))',
     borderBottom: `1px solid rgba(212,175,55,0.35)`,
-    background: '#000', flexShrink: 0, zIndex: 10, position: 'relative',
+    background: '#0e0e12', flexShrink: 0, zIndex: 10, position: 'relative',
     boxShadow: '0 2px 20px rgba(0,0,0,0.8)',
   },
   headerLeft: { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 },
