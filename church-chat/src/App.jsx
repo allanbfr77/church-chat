@@ -1512,7 +1512,10 @@ export default function App() {
     let lastKb = 0
     const apply = () => {
       raf = 0
-      const kb = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop))
+      // iOS 26: depois de fechar o teclado o visualViewport fica alguns px menor que a
+      // janela, e esse resto virava uma faixa vazia embaixo. Só conta como teclado acima de 100px.
+      const gap = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop))
+      const kb = gap > 100 ? gap : 0
       root.style.setProperty('--kb', `${kb}px`)
       root.style.setProperty('--app-top', `${Math.round(vv.offsetTop)}px`)
       if (window.scrollX || window.scrollY) window.scrollTo(0, 0)
@@ -1808,30 +1811,73 @@ export default function App() {
     if (r.rec && r.rec.state !== 'inactive') r.rec.stop()
   }, [])
 
+  // Arrastar pra direita pra responder (estilo WhatsApp)
+  // - trava o eixo nos primeiros px: se o gesto for vertical, deixa a lista rolar e não mexe na bolha
+  // - a bolha segue o dedo 1:1 até o gatilho e depois "pesa" (resistência)
+  // - ícone de responder aparece atrás da bolha e "estala" ao passar do gatilho
+  // - DOM atualizado em requestAnimationFrame (sem re-render do React durante o gesto)
+  const SWIPE_TRIGGER = 56
+  const SWIPE_MAX = 90
   const swipeStart = (e, m) => {
+    if (e.touches.length !== 1) return
     const t = e.touches[0]
-    swipeRef.current = { x: t.clientX, y: t.clientY, dx: 0, active: true }
+    const stack = e.currentTarget
+    swipeRef.current = {
+      x: t.clientX, y: t.clientY, dx: 0, axis: null, active: true, armed: false, raf: 0,
+      stack, bubble: stack.querySelector('.chatMsgBubble'), icon: stack.querySelector('.chatSwipeIcon'),
+    }
     startLongPress(m)
+  }
+  const swipePaint = () => {
+    const sw = swipeRef.current
+    sw.raf = 0
+    if (!sw.bubble) return
+    sw.bubble.style.transform = `translate3d(${sw.dx}px,0,0)`
+    if (sw.icon) {
+      const p = Math.min(1, sw.dx / SWIPE_TRIGGER)
+      sw.icon.style.opacity = String(p)
+      sw.icon.style.transform = `translateY(-50%) scale(${sw.armed ? 1.15 : 0.6 + p * 0.4})`
+    }
   }
   const swipeMove = e => {
     const sw = swipeRef.current
-    if (!sw.active) return
+    if (!sw.active || !sw.bubble) return
     const t = e.touches[0]
     const dx = t.clientX - sw.x
     const dy = t.clientY - sw.y
-    if (Math.abs(dx) > 8 || Math.abs(dy) > 8) cancelLongPress()
-    if (dx > 8 && dx > Math.abs(dy) * 1.5) {
-      sw.dx = Math.min(dx, 72)
-      const bubble = e.currentTarget.querySelector('.chatMsgBubble')
-      if (bubble) { bubble.style.transition = 'none'; bubble.style.transform = `translateX(${sw.dx}px)` }
+    if (!sw.axis) {
+      if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return
+      cancelLongPress()
+      sw.axis = dx > 0 && Math.abs(dx) > Math.abs(dy) * 1.3 ? 'x' : 'y'
+      if (sw.axis === 'y') { sw.active = false; return }
+      sw.bubble.style.transition = 'none'
+      sw.bubble.style.willChange = 'transform'
+      if (sw.icon) {
+        sw.icon.style.transition = 'transform .15s ease-out'
+        sw.icon.style.top = `${sw.bubble.offsetTop + sw.bubble.offsetHeight / 2}px`
+        sw.icon.style.left = `${sw.bubble.offsetLeft + 4}px`
+      }
     }
+    const raw = Math.max(0, dx - 10)
+    sw.dx = raw <= SWIPE_TRIGGER ? raw : Math.min(SWIPE_MAX, SWIPE_TRIGGER + (raw - SWIPE_TRIGGER) * 0.35)
+    sw.armed = raw >= SWIPE_TRIGGER
+    if (!sw.raf) sw.raf = requestAnimationFrame(swipePaint)
   }
   const swipeEnd = (e, m) => {
     cancelLongPress()
     const sw = swipeRef.current
-    const bubble = e.currentTarget.querySelector('.chatMsgBubble')
-    if (bubble) { bubble.style.transition = 'transform .18s ease-out'; bubble.style.transform = '' }
-    if (sw.active && sw.dx >= 60) startReply(m)
+    if (sw.raf) cancelAnimationFrame(sw.raf)
+    if (sw.bubble && sw.axis === 'x') {
+      sw.bubble.style.transition = 'transform .22s cubic-bezier(.2,.8,.2,1)'
+      sw.bubble.style.transform = ''
+      sw.bubble.style.willChange = ''
+      if (sw.icon) {
+        sw.icon.style.transition = 'opacity .18s, transform .18s'
+        sw.icon.style.opacity = '0'
+        sw.icon.style.transform = 'translateY(-50%) scale(0.6)'
+      }
+      if (sw.armed) startReply(m)
+    }
     swipeRef.current = { x: 0, y: 0, dx: 0, active: false }
   }
 
@@ -2286,6 +2332,9 @@ export default function App() {
                       onTouchEnd={e => swipeEnd(e, m)}
                       onTouchCancel={e => swipeEnd(e, m)}
                     >
+                      <span className="chatSwipeIcon" aria-hidden="true">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 14L4 9l5-5" /><path d="M20 20v-7a4 4 0 0 0-4-4H4" /></svg>
+                      </span>
                       {showName && !mine && (
                         <div className="chatMsgAuthor" style={{ color: userColor(m.name || '') }}>
                           {m.name}
@@ -2734,6 +2783,16 @@ const css = `
     /* sem max-width aqui — herdado do chatMsgGroup */
   }
   .chatMsgStack--sent { align-items: flex-end; }
+  /* Gesto de responder: o navegador só cuida da rolagem vertical; o horizontal é nosso */
+  .chatMsgStack { touch-action: pan-y; }
+  .chatSwipeIcon {
+    position: absolute; top: 50%; left: 4px; pointer-events: none;
+    width: 30px; height: 30px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(212,175,55,0.18); color: #FFD700;
+    opacity: 0; transform: translateY(-50%) scale(0.6);
+  }
+  .chatMsgBubble { position: relative; } /* sem z-index: o ícone vem antes no DOM e fica atrás */
   .chatMsgStack--recv { align-items: flex-start; }
 
   /* Nome do remetente */
