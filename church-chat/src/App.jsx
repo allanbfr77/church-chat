@@ -1514,7 +1514,10 @@ export default function App() {
       raf = 0
       // iOS 26: depois de fechar o teclado o visualViewport fica alguns px menor que a
       // janela, e esse resto virava uma faixa vazia embaixo. Só conta como teclado acima de 100px.
-      const gap = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop))
+      // mede a partir do fim real da página (100lvh pode passar da altura da janela)
+      const pageEl = document.querySelector('.chat-conversation-root')
+      const pageH = pageEl ? pageEl.offsetHeight : window.innerHeight
+      const gap = Math.max(0, Math.round(pageH - vv.height - vv.offsetTop))
       const kb = gap > 100 ? gap : 0
       root.style.setProperty('--kb', `${kb}px`)
       root.style.setProperty('--app-top', `${Math.round(vv.offsetTop)}px`)
@@ -2705,7 +2708,8 @@ const css = `
   /* Uma cor só pra tudo que encosta nas bordas: o Safari (iOS 26) pinta as faixas de cima e
      de baixo com a cor do fundo da página, então header, barra de mensagem e faixas ficam iguais */
   html, body { margin: 0; padding: 0; overflow: hidden; overscroll-behavior: none; background: #0e0e12; }
-  body { position: fixed; inset: 0; width: 100%; }
+  html, body { height: 100%; width: 100%; }
+  body { position: relative; touch-action: pan-x pan-y; }
   /* Sem seleção/cópia nativa do iOS: copiar só pelo menu do app */
   html, body, #root {
     -webkit-user-select: none; user-select: none;
@@ -3079,8 +3083,11 @@ const GOLD_DIM = 'rgba(212,175,55,0.25)'
 const GOLD_FAINT = 'rgba(212,175,55,0.08)'
 
 const s = {
-  page: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, transform: 'translateY(var(--app-top, 0px))', display: 'flex', flexDirection: 'column', background: '#0e0e12', isolation: 'isolate', fontFamily: "'Outfit', system-ui, sans-serif", color: '#e8e8ee' },
-  bgBlur: { position: 'fixed', inset: 0, backgroundImage: 'url(/images/image.png)', backgroundSize: 'cover', backgroundPosition: 'center', filter: 'blur(2px)', transform: 'scale(1.04)', opacity: 0.62, zIndex: -1, pointerEvents: 'none' },
+  // Não é position:fixed: no iOS 26 o Safari corta conteúdo fixo antes da área da barra dele,
+  // deixando uma faixa vazia embaixo. Como bloco normal com 100lvh (viewport "grande"), a página
+  // vai até o fim da tela — mesmo motivo de o site Tom Louvores encostar no rodapé.
+  page: { position: 'absolute', top: 0, left: 0, right: 0, height: '100lvh', transform: 'translateY(var(--app-top, 0px))', display: 'flex', flexDirection: 'column', background: '#0e0e12', isolation: 'isolate', fontFamily: "'Outfit', system-ui, sans-serif", color: '#e8e8ee' },
+  bgBlur: { position: 'absolute', inset: 0, backgroundImage: 'url(/images/image.png)', backgroundSize: 'cover', backgroundPosition: 'center', filter: 'blur(2px)', transform: 'scale(1.04)', opacity: 0.62, zIndex: -1, pointerEvents: 'none' },
 
   // Login
   loginOuter: { flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 'max(24px, env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) max(24px, env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px))', position: 'relative', zIndex: 1 },
@@ -3240,7 +3247,7 @@ const s = {
   inputBar: {
     display: 'flex', gap: 8,
     padding:
-      '12px calc(12px + env(safe-area-inset-right, 0px)) max(10px, calc(env(safe-area-inset-bottom, 0px) - 14px - var(--kb, 0px))) calc(12px + env(safe-area-inset-left, 0px))',
+      '12px calc(12px + env(safe-area-inset-right, 0px)) max(12px, calc(env(safe-area-inset-bottom, 0px) - var(--kb, 0px))) calc(12px + env(safe-area-inset-left, 0px))',
     borderTop: '1px solid rgba(255,255,255,0.05)',
     borderLeft: '1px solid rgba(255,255,255,0.04)',
     borderRight: '1px solid rgba(255,255,255,0.04)',
