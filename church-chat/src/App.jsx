@@ -125,12 +125,88 @@ function linkifyText(text) {
   return out
 }
 
+function notifBody(m) {
+  const t = collapseChatLineBreaks(m.text || '')
+  if (t) return t
+  if (m.file?.type && String(m.file.type).startsWith('audio/')) return 'Mensagem de voz'
+  return m.file ? 'Enviou um arquivo' : ''
+}
+
+function fmtDuration(sec) {
+  const t = Math.max(0, Math.round(sec || 0))
+  return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`
+}
+
+const VOICE_MAX_SECS = 120
+
+function Ticks({ level }) {
+  // level: 1 enviado, 2 entregue, 3 lido
+  const color = level >= 3 ? '#FFD700' : 'rgba(255,255,255,0.6)'
+  return (
+    <svg width="18" height="14" viewBox="0 0 18 14" fill="none" stroke={color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-label={level >= 3 ? 'Lida' : level === 2 ? 'Entregue' : 'Enviada'}>
+      <path d="m1.5 7.5 3.5 3.5L12 3" />
+      {level >= 2 && <path d="m8 10.5.5.5L16 3" />}
+    </svg>
+  )
+}
+
+function AudioBubble({ file }) {
+  const src = file.dataUrl || file.url
+  const audioRef = useRef(null)
+  const [playing, setPlaying] = useState(false)
+  const [pos, setPos] = useState(0)
+  const [dur, setDur] = useState(file.duration || 0)
+
+  const toggle = () => {
+    const a = audioRef.current
+    if (!a) return
+    if (a.paused) a.play().catch(() => {})
+    else a.pause()
+  }
+  const seek = e => {
+    const a = audioRef.current
+    const d = a?.duration && isFinite(a.duration) ? a.duration : dur
+    if (!a || !d) return
+    const r = e.currentTarget.getBoundingClientRect()
+    a.currentTime = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)) * d
+  }
+  const total = dur || 0
+  return (
+    <div className="chatAudio">
+      <audio
+        ref={audioRef}
+        src={src}
+        preload="metadata"
+        onPlay={() => setPlaying(true)}
+        onPause={() => setPlaying(false)}
+        onEnded={() => { setPlaying(false); setPos(0) }}
+        onTimeUpdate={e => setPos(e.currentTarget.currentTime)}
+        onLoadedMetadata={e => { if (isFinite(e.currentTarget.duration)) setDur(e.currentTarget.duration) }}
+      />
+      <button type="button" className="chatAudioBtn" onClick={toggle} aria-label={playing ? 'Pausar' : 'Reproduzir'}>
+        {playing ? (
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="5" width="4" height="14" rx="1" /><rect x="14" y="5" width="4" height="14" rx="1" /></svg>
+        ) : (
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z" /></svg>
+        )}
+      </button>
+      <div className="chatAudioMain">
+        <div className="chatAudioTrack" onClick={seek}>
+          <div className="chatAudioFill" style={{ width: total ? `${Math.min(100, (pos / total) * 100)}%` : 0 }} />
+        </div>
+        <div className="chatAudioTime">{fmtDuration(playing || pos > 0 ? pos : total)}</div>
+      </div>
+    </div>
+  )
+}
+
 const REACTION_EMOJIS = ['👍', '❤️', '🙏', '😂', '😮', '✅']
 
 // Resumo curto da mensagem para citação (preserva mesmo se a original for apagada)
 function replySnippet(m) {
-  const t = collapseChatLineBreaks(m.text || '').trim()
+  const t = notifBody(m).trim()
   if (t) return t.length > 90 ? `${t.slice(0, 90)}…` : t
+  if (m.file?.type && String(m.file.type).startsWith('audio/')) return 'Mensagem de voz'
   return m.file ? (fileLooksLikeImage(m.file, m.file.dataUrl || m.file.url) ? 'Imagem' : (m.file.name || 'Arquivo')) : ''
 }
 
@@ -538,6 +614,8 @@ function FilePreview({ file, mine }) {
   const src = file.dataUrl || file.url
   const [fullOpen, setFullOpen] = useState(false)
 
+  if (src && String(file.type || '').startsWith('audio/')) return <AudioBubble file={file} />
+
   if (fileLooksLikeImage(file, src)) {
     if (!src) {
       return (
@@ -632,7 +710,7 @@ function OnlineModal({ users, onClose }) {
         </div>
         <div style={sm.list}>
           {users.length === 0 && (
-            <div style={sm.empty}>Nenhum usuário ativo recentemente</div>
+            <div style={sm.empty}>Ninguém online no momento</div>
           )}
           {users.map((u, i) => (
             <div key={i} style={sm.userRow}>
@@ -693,8 +771,20 @@ export default function App() {
   const [showEmojiPicker, setShowEmojiPicker] = useState(false)
   const [showPlusMenu, setShowPlusMenu] = useState(false)
   const [replyingTo, setReplyingTo] = useState(null)   // { id, name, text }
+  const [copiedId, setCopiedId] = useState(null)
   const [msgMenuId, setMsgMenuId] = useState(null)     // mensagem com menu (reagir / responder) aberto
   const longPressRef = useRef(null)
+  const swipeRef = useRef({ x: 0, y: 0, dx: 0, active: false })
+  const msgAreaRef = useRef(null)
+  const atBottomRef = useRef(true)
+  const [newMsgCount, setNewMsgCount] = useState(0)
+  const [showJump, setShowJump] = useState(false)
+  const [visTick, setVisTick] = useState(0)
+  const deliveredRef = useRef(new Set())
+  const readRef = useRef(new Set())
+  const [recording, setRecording] = useState(false)
+  const [recSecs, setRecSecs] = useState(0)
+  const recRef = useRef({ rec: null, chunks: [], stream: null, timer: null, cancelled: false, start: 0 })
   /** Snapshot bruto de `typing/` (reavaliado no relógio para sumir entradas velhas sem novo evento) */
   const [typingSnap, setTypingSnap]     = useState(null)
   const [typingUsers, setTypingUsers]   = useState([])
@@ -703,6 +793,7 @@ export default function App() {
   const [msgActionBusy, setMsgActionBusy] = useState(null)
   const [confirmDialog, setConfirmDialog]   = useState(null)
   const bottomRef    = useRef(null)
+  const connIdRef    = useRef(uid())
   const messageInputRef = useRef(null)
   const fileRef      = useRef(null)
   const emojiPickerRef = useRef(null)
@@ -1071,7 +1162,7 @@ export default function App() {
           msgs.forEach(m => {
             if (m.uid === userIdRef.current || messageIsTombstone(m)) return
             if ((m.ts || 0) >= joinT) {
-              fireNotif((m.name || 'Alguém').toLocaleUpperCase('pt-BR'), collapseChatLineBreaks(m.text || ''), m.id)
+              fireNotif((m.name || 'Alguém').toLocaleUpperCase('pt-BR'), notifBody(m), m.id)
             }
           })
         }
@@ -1080,7 +1171,7 @@ export default function App() {
           if (!knownIdsRef.current.has(m.id)) {
             knownIdsRef.current.add(m.id)
             if (m.uid !== userIdRef.current && !messageIsTombstone(m)) {
-              fireNotif((m.name || 'Alguém').toLocaleUpperCase('pt-BR'), collapseChatLineBreaks(m.text || ''), m.id)
+              fireNotif((m.name || 'Alguém').toLocaleUpperCase('pt-BR'), notifBody(m), m.id)
             }
           }
         })
@@ -1137,29 +1228,104 @@ export default function App() {
     }
   }, [userId])
 
+  // Presença real: cada aba logada registra uma conexão em presence/{uid}/{connId}; o servidor
+  // remove sozinho (onDisconnect) ao fechar a aba/perder a conexão. Foco da aba não importa.
   useEffect(() => {
     if (!joined) {
       setOnlineUsers([])
       return
     }
-    const cutoff = Date.now() - 5 * 60 * 1000
-    const userMap = new Map()
-    messages.filter(m => (m.ts || 0) > cutoff).forEach(m => {
-      if (!userMap.has(m.uid)) userMap.set(m.uid, m.name)
+    const connRef = dbRef(db, `presence/${userId}/${connIdRef.current}`)
+    const offConn = onValue(dbRef(db, '.info/connected'), snap => {
+      if (snap.val() !== true) return
+      onDisconnect(connRef).remove()
+        .then(() => set(connRef, { name: nameRef.current, ts: Date.now() }))
+        .catch(() => {})
     })
-    userMap.set(userId, name)
-    setOnlineUsers(Array.from(userMap.values()))
-  }, [joined, messages, userId, name])
+    const offList = onValue(
+      dbRef(db, 'presence'),
+      snap => {
+        const val = snap.val() || {}
+        const names = Object.values(val)
+          .map(conns => Object.values(conns || {})[0]?.name)
+          .filter(Boolean)
+        setOnlineUsers(names.length ? names : [nameRef.current])
+      },
+      () => setOnlineUsers([nameRef.current]),
+    )
+    return () => {
+      offConn()
+      offList()
+      onDisconnect(connRef).cancel().catch(() => {})
+      remove(connRef).catch(() => {})
+    }
+  }, [joined, userId])
 
-  // Rola ao fim só quando chega mensagem nova (reações/edições não devem mover a rolagem)
-  const lastMsgId = messages[messages.length - 1]?.id
+  // Rola ao fim quando chega mensagem nova — mas só se você já está no fim ou foi você quem enviou;
+  // caso contrário mostra o botão "ir para o fim" com o contador de novas
+  const lastMsg = messages[messages.length - 1]
+  const lastMsgId = lastMsg?.id
   useEffect(() => {
     if (!joined) return
-    bottomRef.current?.scrollIntoView({
-      behavior: messagesScrollInitRef.current ? 'smooth' : 'auto',
-    })
+    const first = !messagesScrollInitRef.current
+    const mineLast = lastMsg?.uid === userId
+    if (first || mineLast || atBottomRef.current) {
+      bottomRef.current?.scrollIntoView({ behavior: first ? 'auto' : 'smooth' })
+      setNewMsgCount(0)
+      setShowJump(false)
+    } else if (lastMsg && !messageIsTombstone(lastMsg)) {
+      setNewMsgCount(n => n + 1)
+      setShowJump(true)
+    }
     if (messages.length > 0) messagesScrollInitRef.current = true
-  }, [lastMsgId, messages.length, joined])
+  }, [lastMsgId, joined])
+
+  const onMsgScroll = e => {
+    const el = e.currentTarget
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+    atBottomRef.current = atBottom
+    if (atBottom) {
+      setShowJump(false)
+      setNewMsgCount(0)
+    } else {
+      setShowJump(true)
+    }
+  }
+
+  const jumpToBottom = () => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    setNewMsgCount(0)
+    setShowJump(false)
+  }
+
+  // Recibos: marca como entregue ao receber e como lida quando a aba está visível
+  useEffect(() => {
+    const bump = () => setVisTick(t => t + 1)
+    document.addEventListener('visibilitychange', bump)
+    window.addEventListener('focus', bump)
+    return () => {
+      document.removeEventListener('visibilitychange', bump)
+      window.removeEventListener('focus', bump)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!joined) return
+    const visible = document.visibilityState === 'visible'
+    const upd = {}
+    messages.forEach(m => {
+      if (m.uid === userId || messageIsTombstone(m)) return
+      if (!m.deliveredTo?.[userId] && !deliveredRef.current.has(m.id)) {
+        deliveredRef.current.add(m.id)
+        upd[`messages/${m.id}/deliveredTo/${userId}`] = true
+      }
+      if (visible && !m.readBy?.[userId] && !readRef.current.has(m.id)) {
+        readRef.current.add(m.id)
+        upd[`messages/${m.id}/readBy/${userId}`] = true
+      }
+    })
+    if (Object.keys(upd).length) update(dbRef(db), upd).catch(() => {})
+  }, [messages, joined, userId, visTick])
 
   useEffect(() => {
     if (!showEmojiPicker && !showPlusMenu) return
@@ -1319,6 +1485,139 @@ export default function App() {
 
   const canSend = (input.trim() || pendingFile) && !sending && !reading
 
+  const pickFile = kind => {
+    setShowPlusMenu(false)
+    const el = fileRef.current
+    if (!el) return
+    el.accept = kind === 'gallery' ? 'image/*,video/*' : kind === 'camera' ? 'image/*' : ''
+    if (kind === 'camera') el.setAttribute('capture', 'environment')
+    else el.removeAttribute('capture')
+    el.click()
+  }
+
+  const stopRecTimer = () => {
+    window.clearInterval(recRef.current.timer)
+    recRef.current.timer = null
+  }
+
+  const startRecording = async () => {
+    if (recording || !navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      setFileError('Gravação de áudio não é suportada neste navegador.')
+      return
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'].find(t => MediaRecorder.isTypeSupported(t))
+      const rec = mime ? new MediaRecorder(stream, { mimeType: mime, audioBitsPerSecond: 32000 }) : new MediaRecorder(stream)
+      const r = recRef.current
+      r.rec = rec; r.stream = stream; r.chunks = []; r.cancelled = false; r.start = Date.now()
+      rec.ondataavailable = e => { if (e.data.size) r.chunks.push(e.data) }
+      rec.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop())
+        stopRecTimer()
+        setRecording(false)
+        if (r.cancelled || !r.chunks.length) return
+        const duration = (Date.now() - r.start) / 1000
+        if (duration < 0.7) return
+        const type = (rec.mimeType || mime || 'audio/webm').split(';')[0]
+        const blob = new Blob(r.chunks, { type })
+        if (blob.size > 10 * 1048576) { setFileError('Áudio muito grande.'); return }
+        try {
+          const dataUrl = await readAsDataURL(blob)
+          const ext = type.includes('mp4') ? 'm4a' : 'webm'
+          await push(dbRef(db, 'messages'), {
+            uid: userId, name, text: '', ts: Date.now(),
+            file: { name: `audio.${ext}`, size: blob.size, type, dataUrl, duration: Math.round(duration) },
+            ...(replyingTo ? { replyTo: replyingTo } : {}),
+          }).then(ref => setSentIds(prev => new Set([...prev, ref.key])))
+          setReplyingTo(null)
+        } catch (err) {
+          console.error(err)
+          setFileError('Erro ao enviar o áudio.')
+        }
+      }
+      rec.start()
+      setRecSecs(0)
+      setRecording(true)
+      r.timer = window.setInterval(() => {
+        const secs = Math.round((Date.now() - r.start) / 1000)
+        setRecSecs(secs)
+        if (secs >= VOICE_MAX_SECS) rec.state !== 'inactive' && rec.stop()
+      }, 250)
+    } catch (err) {
+      console.error(err)
+      setFileError('Não foi possível acessar o microfone. Verifique a permissão.')
+    }
+  }
+
+  const finishRecording = sendIt => {
+    const r = recRef.current
+    r.cancelled = !sendIt
+    if (r.rec && r.rec.state !== 'inactive') r.rec.stop()
+    else setRecording(false)
+  }
+
+  useEffect(() => () => {
+    const r = recRef.current
+    r.cancelled = true
+    stopRecTimer()
+    if (r.rec && r.rec.state !== 'inactive') r.rec.stop()
+  }, [])
+
+  const swipeStart = (e, m) => {
+    const t = e.touches[0]
+    swipeRef.current = { x: t.clientX, y: t.clientY, dx: 0, active: true }
+    startLongPress(m)
+  }
+  const swipeMove = e => {
+    const sw = swipeRef.current
+    if (!sw.active) return
+    const t = e.touches[0]
+    const dx = t.clientX - sw.x
+    const dy = t.clientY - sw.y
+    if (Math.abs(dx) > 8 || Math.abs(dy) > 8) cancelLongPress()
+    if (dx > 8 && dx > Math.abs(dy) * 1.5) {
+      sw.dx = Math.min(dx, 72)
+      const bubble = e.currentTarget.querySelector('.chatMsgBubble')
+      if (bubble) { bubble.style.transition = 'none'; bubble.style.transform = `translateX(${sw.dx}px)` }
+    }
+  }
+  const swipeEnd = (e, m) => {
+    cancelLongPress()
+    const sw = swipeRef.current
+    const bubble = e.currentTarget.querySelector('.chatMsgBubble')
+    if (bubble) { bubble.style.transition = 'transform .18s ease-out'; bubble.style.transform = '' }
+    if (sw.active && sw.dx >= 60) startReply(m)
+    swipeRef.current = { x: 0, y: 0, dx: 0, active: false }
+  }
+
+  const copyMessage = async m => {
+    const text = collapseChatLineBreaks(m.text || '').trim()
+    if (!text) return
+    let ok = false
+    try {
+      await navigator.clipboard.writeText(text)
+      ok = true
+    } catch {
+      try {
+        const ta = document.createElement('textarea')
+        ta.value = text
+        ta.style.cssText = 'position:fixed;opacity:0;top:0;left:0'
+        document.body.appendChild(ta)
+        ta.select()
+        ok = document.execCommand('copy')
+        ta.remove()
+      } catch {}
+    }
+    if (ok) {
+      setCopiedId(m.id)
+      window.setTimeout(() => { setCopiedId(null); setMsgMenuId(null) }, 1200)
+    } else {
+      setMsgMenuId(null)
+      setFileError('Não foi possível copiar.')
+    }
+  }
+
   const startReply = m => {
     if (messageIsTombstone(m)) return
     setReplyingTo({ id: m.id, name: m.name || 'Alguém', text: replySnippet(m) })
@@ -1356,7 +1655,7 @@ export default function App() {
   const startEdit = m => {
     if (m.uid !== userId || messageIsTombstone(m) || m.editedOnce) return
     setEditingId(m.id)
-    setEditDraft(collapseChatLineBreaks(m.text || ''))
+    setEditDraft(notifBody(m))
   }
 
   const cancelEdit = () => {
@@ -1621,7 +1920,7 @@ export default function App() {
       <div style={s.desktopWrapper}>
         <div style={s.chatPanel}>
 
-          <div style={s.msgArea}>
+          <div style={s.msgArea} ref={msgAreaRef} onScroll={onMsgScroll}>
             {!messagesReady && (
               <div style={s.empty}>Carregando mensagens…</div>
             )}
@@ -1629,26 +1928,13 @@ export default function App() {
               <div style={s.emptyWelcome}>Nenhuma mensagem ainda. Diga olá! 👋</div>
             )}
             {messages.map((m, i) => {
-              if (messageIsTombstone(m)) {
-                return (
-                  <div key={m.id} style={s.rowSystem}>
-                    <div style={s.systemTombstone} role="status" aria-live="polite">
-                      <span style={s.systemTombstoneLabel}>Sistema</span>
-                      <span style={s.systemTombstoneText}>{MSG_APAGADA_FRASE}</span>
-                      <span style={s.systemTombstoneMeta}>
-                        {m.name} · {timeStr(m.deletedAt || m.ts)}
-                      </span>
-                    </div>
-                  </div>
-                )
-              }
-
+              const dead = messageIsTombstone(m)
               const mine     = m.uid === userId
               const isFirst  = !sameMsgGroup(messages[i - 1], m)
               const isLast   = !sameMsgGroup(m, messages[i + 1])
               const showName = !mine && isFirst
               const sent     = mine && sentIds.has(m.id)
-              const isEditing = editingId === m.id
+              const isEditing = !dead && editingId === m.id
               const busy     = msgActionBusy === m.id
               const canEditMine = mine && !m.editedOnce
 
@@ -1685,14 +1971,14 @@ export default function App() {
                       className={`chatMsgStack ${mine ? 'chatMsgStack--sent' : 'chatMsgStack--recv'}`}
                       data-msg-menu
                       onContextMenu={e => {
-                        if (isEditing) return
+                        if (isEditing || dead) return
                         e.preventDefault()
                         setMsgMenuId(m.id)
                       }}
-                      onTouchStart={() => { if (!isEditing) startLongPress(m) }}
-                      onTouchMove={cancelLongPress}
-                      onTouchEnd={cancelLongPress}
-                      onTouchCancel={cancelLongPress}
+                      onTouchStart={e => { if (!isEditing && !dead) swipeStart(e, m) }}
+                      onTouchMove={swipeMove}
+                      onTouchEnd={e => swipeEnd(e, m)}
+                      onTouchCancel={e => swipeEnd(e, m)}
                     >
                       {showName && !mine && (
                         <div className="chatMsgAuthor" style={{ color: userColor(m.name || '') }}>
@@ -1700,11 +1986,18 @@ export default function App() {
                         </div>
                       )}
                       <div
-                        className={`chatMsgBubble ${mine ? 'chatMsgBubble--sent' : 'chatMsgBubble--recv'} ${isFirst ? 'chatMsgBubble--first' : ''}`}
+                        className={`chatMsgBubble ${mine ? 'chatMsgBubble--sent' : 'chatMsgBubble--recv'} ${isFirst ? 'chatMsgBubble--first' : ''} ${dead ? 'chatMsgBubble--dead' : ''}`}
                         style={!mine && peerColor ? { ['--chat-accent']: peerColor } : undefined}
                       >
                         <div className="chatMsgBody">
-                          {isEditing ? (
+                          {dead ? (
+                            <div className="chatMsgDeleted">
+                              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                <circle cx="12" cy="12" r="9" /><path d="m5.7 5.7 12.6 12.6" />
+                              </svg>
+                              {mine ? 'Você apagou esta mensagem' : 'Esta mensagem foi apagada'}
+                            </div>
+                          ) : isEditing ? (
                             <div className="chatMsgEditWrap">
                               {m.file && <FilePreview file={m.file} mine={mine} />}
                               <input
@@ -1748,19 +2041,21 @@ export default function App() {
                               {m.text && (
                                 <div className="chatMsgText">{linkifyText(collapseChatLineBreaks(m.text))}</div>
                               )}
-                              {m.editedOnce && <div className="chatMsgEdited">editada</div>}
                             </>
                           )}
                         </div>
-                        {!isEditing && (isLast || mine) && (
-                          <div className="chatMsgMeta">
-                            {isLast && <span>{timeStr(m.ts)}</span>}
-                            {mine && (
-                              <span className={sent ? 'check-on chatMsgCheck' : 'check-off chatMsgCheck'}>✓</span>
+                        {!isEditing && (dead || isLast || mine || m.editedOnce) && (
+                          <div className={`chatMsgMeta ${m.editedOnce && !dead ? 'chatMsgMeta--wide' : ''}`}>
+                            {m.editedOnce && !dead && <span className="chatMsgEditedTag">editada</span>}
+                            {(dead || isLast) && <span>{timeStr(m.deletedAt || m.ts)}</span>}
+                            {mine && !dead && (
+                              <span className="chatMsgCheck">
+                                <Ticks level={Object.keys(m.readBy || {}).length > 0 ? 3 : Object.keys(m.deliveredTo || {}).length > 0 ? 2 : 1} />
+                              </span>
                             )}
                           </div>
                         )}
-                        {!isEditing && (
+                        {!isEditing && !dead && (
                           <button
                             type="button"
                             className="chatMsgMore"
@@ -1774,7 +2069,7 @@ export default function App() {
                           </button>
                         )}
                       </div>
-                      {m.reactions && Object.keys(m.reactions).length > 0 && (() => {
+                      {!dead && m.reactions && Object.keys(m.reactions).length > 0 && (() => {
                         const counts = {}
                         Object.values(m.reactions).forEach(e => { counts[e] = (counts[e] || 0) + 1 })
                         return (
@@ -1793,8 +2088,18 @@ export default function App() {
                           </div>
                         )
                       })()}
-                      {msgMenuId === m.id && !isEditing && (
-                        <div className={`chatMsgMenu ${mine ? 'chatMsgMenu--sent' : ''}`} role="menu">
+                      {msgMenuId === m.id && !isEditing && !dead && (
+                        <div
+                          className={`chatMsgMenu ${mine ? 'chatMsgMenu--sent' : ''}`}
+                          role="menu"
+                          ref={el => {
+                            // abre para baixo; só vira para cima se não couber na área visível
+                            if (!el || !msgAreaRef.current) return
+                            const below = msgAreaRef.current.getBoundingClientRect().bottom - el.parentElement.getBoundingClientRect().bottom
+                            if (below < el.offsetHeight + 8) { el.style.top = 'auto'; el.style.bottom = 'calc(100% + 4px)' }
+                            else { el.style.top = ''; el.style.bottom = '' }
+                          }}
+                        >
                           <div className="chatMsgMenuEmojis">
                             {REACTION_EMOJIS.map(emo => (
                               <button
@@ -1814,9 +2119,23 @@ export default function App() {
                             </svg>
                             Responder
                           </button>
+                          {m.text && (
+                            <button type="button" role="menuitem" className="chatMsgMenuItem" onClick={() => copyMessage(m)}>
+                              {copiedId === m.id ? (
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                  <path d="m5 12.5 4.5 4.5L19 7.5" />
+                                </svg>
+                              ) : (
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                  <rect x="9" y="9" width="11" height="11" rx="2" /><path d="M5 15V6a2 2 0 0 1 2-2h9" />
+                                </svg>
+                              )}
+                              {copiedId === m.id ? 'Copiado' : 'Copiar'}
+                            </button>
+                          )}
                         </div>
                       )}
-                      {mine && !isEditing && (
+                      {mine && !isEditing && !dead && (
                         <div className="chatMsgActions">
                           {canEditMine && (
                             <button
@@ -1846,6 +2165,14 @@ export default function App() {
               )
             })}
             <div ref={bottomRef} />
+            {showJump && (
+              <div className="chatJumpWrap">
+                <button type="button" className="chatJumpBtn" onClick={jumpToBottom} aria-label="Ir para as mensagens mais recentes">
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+                  {newMsgCount > 0 && <span className="chatJumpBadge">{newMsgCount > 99 ? '99+' : newMsgCount}</span>}
+                </button>
+              </div>
+            )}
           </div>
 
           {reading && (
@@ -1898,6 +2225,22 @@ export default function App() {
           )}
 
           <div style={s.inputBar}>
+            {recording && (
+              <>
+                <button type="button" style={s.attachBtn} onClick={() => finishRecording(false)} aria-label="Cancelar gravação" title="Cancelar">
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" ><path d="M4 7h16" /><path d="M10 11v6" /><path d="M14 11v6" /><path d="M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12" /><path d="M9 7V4h6v3" /></svg>
+                </button>
+                <div style={s.recBar} role="status">
+                  <span className="chatRecDot" />
+                  <span style={{ fontSize: 15, fontVariantNumeric: 'tabular-nums' }}>{fmtDuration(recSecs)}</span>
+                  <span style={{ fontSize: 13, color: 'rgba(255,255,255,0.6)' }}>Gravando…</span>
+                </div>
+                <button type="button" style={{ ...s.sendBtn, boxShadow: '0 0 14px rgba(255,215,0,0.35)' }} onClick={() => finishRecording(true)} aria-label="Enviar áudio">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M22 2 11 13" /><path d="M22 2 15 22l-4-9-9-4 20-7z" /></svg>
+                </button>
+              </>
+            )}
+            <div hidden={recording} style={{ display: recording ? 'none' : 'contents' }}>
             <div ref={emojiPickerRef} style={s.emojiPickerWrap}>
               <button
                 type="button"
@@ -1922,12 +2265,17 @@ export default function App() {
                     </svg>
                     Emoji
                   </button>
-                  <button type="button" role="menuitem" style={s.plusMenuItem} disabled={reading}
-                    onClick={() => { setShowPlusMenu(false); fileRef.current?.click() }}>
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                      <path d="m21 11.5-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.7 3.7 0 0 1 5.2 5.2l-8.6 8.6a1.8 1.8 0 0 1-2.6-2.6l7.9-7.9" />
-                    </svg>
-                    {reading ? 'Carregando…' : 'Anexar arquivo'}
+                  <button type="button" role="menuitem" style={s.plusMenuItem} onClick={() => pickFile('camera')}>
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 7h2l1.5-2h7L17 7h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2z" /><circle cx="12" cy="13" r="3.5" /></svg>
+                    Câmera
+                  </button>
+                  <button type="button" role="menuitem" style={s.plusMenuItem} onClick={() => pickFile('gallery')}>
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2" /><circle cx="9" cy="10" r="1.6" /><path d="m21 16-5-5-8 8" /></svg>
+                    Galeria
+                  </button>
+                  <button type="button" role="menuitem" style={s.plusMenuItem} disabled={reading} onClick={() => pickFile('document')}>
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" /><path d="M14 3v5h5" /><path d="M9 13h6" /><path d="M9 17h4" /></svg>
+                    {reading ? 'Carregando…' : 'Documento'}
                   </button>
                 </div>
               )}
@@ -1964,9 +2312,15 @@ export default function App() {
               }}
               onKeyDown={handleKey}
             />
+            {!(canSend || sending) && (
+              <button type="button" style={s.sendBtn} onClick={startRecording} aria-label="Gravar mensagem de voz" title="Gravar mensagem de voz">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5 11a7 7 0 0 0 14 0" /><path d="M12 18v3" /></svg>
+              </button>
+            )}
             <button
               aria-label="Enviar"
               style={{
+                display: canSend || sending ? 'flex' : 'none',
                 ...s.sendBtn,
                 opacity: canSend ? 1 : 0.4,
                 boxShadow: canSend ? '0 0 14px rgba(255,215,0,0.35)' : 'none',
@@ -1979,6 +2333,7 @@ export default function App() {
                 </svg>
               )}
             </button>
+            </div>
           </div>
         </div>
       </div>
@@ -2013,8 +2368,8 @@ const css = `
   .chatMsgGroup {
     display: flex;
     flex-direction: row;
-    align-items: flex-end;
-    gap: 10px;
+    align-items: flex-start;
+    gap: 12px;
     max-width: min(78vw, 560px);
   }
 
@@ -2024,8 +2379,8 @@ const css = `
     flex-shrink: 0;
     display: flex;
     justify-content: center;
-    align-items: flex-end;
-    padding-bottom: 2px;
+    align-items: flex-start;
+    padding-top: 24px; /* alinha o avatar com o topo do balão (abaixo do nome) */
   }
   .chatMsgAvatar {
     width: 34px;
@@ -2081,17 +2436,26 @@ const css = `
   }
   .chatMsgBubble--sent {
     background: linear-gradient(135deg, #2a1f00, #3d2d00);
-    border: 1px solid rgba(212,175,55,0.35);
+    border: none;
     border-radius: 18px;
   }
-  .chatMsgBubble--sent.chatMsgBubble--first { border-radius: 18px 6px 18px 18px; }
-  .chatMsgBubble--recv {
-    background: #0d0d0d;
-    border: 1px solid rgba(255,255,255,0.07);
-    border-left: 4px solid var(--chat-accent, rgba(212,175,55,0.45));
+    .chatMsgBubble--recv {
+    background: #17171b;
+    border: none;
     border-radius: 18px;
   }
-  .chatMsgBubble--recv.chatMsgBubble--first { border-radius: 6px 18px 18px 18px; }
+  /* rabinho no canto superior esquerdo, apontando para o avatar/nome de quem enviou */
+  .chatMsgBubble--recv.chatMsgBubble--first { border-top-left-radius: 0; }
+  .chatMsgBubble--recv.chatMsgBubble--first::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: -8px;
+    width: 8px;
+    height: 12px;
+    background: #17171b;
+    clip-path: polygon(100% 0, 100% 100%, 0 0);
+  }
 
   /* Área de conteúdo (texto + arquivo) */
   .chatMsgBody {
@@ -2117,6 +2481,7 @@ const css = `
     -webkit-tap-highlight-color: transparent;
   }
   .chatMsgLink:hover { color: #bfe3ff; }
+  .chatMsgEditedTag { font-style: italic; color: rgba(255,255,255,0.62); }
   .chatMsgEdited {
     font-size: 10px;
     color: rgba(212,175,55,0.75);
@@ -2145,11 +2510,51 @@ const css = `
     width: 0;
     min-width: 100%;
   }
+  /* com "editada" o rodapé é mais largo que textos curtos: deixa o balão crescer */
+  .chatMsgMeta--wide { width: auto; }
   .chatMsgCheck {
     font-size: 13px;
     font-weight: 700;
     color: #D4AF37;
     line-height: 1;
+  }
+
+  /* Ir para o fim */
+  .chatJumpWrap { position: sticky; bottom: 0; height: 0; align-self: flex-end; width: 0; overflow: visible; }
+  .chatJumpBtn {
+    position: absolute; right: 0; bottom: 8px; width: 44px; height: 44px; padding: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: #1c1c22; border: 1px solid rgba(255,255,255,0.28); border-radius: 50%;
+    color: #fff; cursor: pointer; box-shadow: 0 4px 14px rgba(0,0,0,0.55);
+  }
+  .chatJumpBadge {
+    position: absolute; top: -8px; right: -4px; min-width: 20px; height: 20px; padding: 0 5px;
+    display: flex; align-items: center; justify-content: center;
+    background: #FFD700; color: #1a1300; border-radius: 10px; font-size: 12px; font-weight: 700;
+  }
+
+  /* Gravação */
+  .chatRecDot { width: 10px; height: 10px; border-radius: 50%; background: #ef4444; animation: recPulse 1s ease-in-out infinite; }
+  @keyframes recPulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+
+  /* Player de áudio */
+  .chatAudio { display: flex; align-items: center; gap: 10px; min-width: 210px; padding: 2px 0 4px; }
+  .chatAudioBtn {
+    width: 40px; height: 40px; padding: 0; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+    background: linear-gradient(135deg, #C9A84C, #FFD700); color: #1a1300; border: none; border-radius: 50%; cursor: pointer;
+  }
+  .chatAudioMain { flex: 1; min-width: 0; }
+  .chatAudioTrack { height: 20px; display: flex; align-items: center; cursor: pointer; position: relative; }
+  .chatAudioTrack::before { content: ''; position: absolute; left: 0; right: 0; height: 4px; border-radius: 2px; background: rgba(255,255,255,0.25); }
+  .chatAudioFill { position: relative; height: 4px; border-radius: 2px; background: #FFD700; }
+  .chatAudioTime { font-size: 12px; color: rgba(255,255,255,0.7); font-variant-numeric: tabular-nums; }
+
+  /* Mensagem apagada (estilo WhatsApp) */
+  .chatMsgBubble--dead { background: #17171b; opacity: 0.85; }
+  .chatMsgBubble--sent.chatMsgBubble--dead { background: rgba(61,45,0,0.55); }
+  .chatMsgDeleted {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 14px; font-style: italic; color: rgba(255,255,255,0.6);
   }
 
   /* Citação (resposta) */
@@ -2210,7 +2615,7 @@ const css = `
     .chatMsgBubble:hover .chatMsgMore, .chatMsgStack:has(.chatMsgMenu) .chatMsgMore { display: flex; }
   }
   .chatMsgMenu {
-    position: absolute; bottom: calc(100% + 4px); left: 0; z-index: 30;
+    position: absolute; top: calc(100% + 4px); left: 0; z-index: 30;
     display: flex; flex-direction: column; gap: 2px; padding: 6px;
     background: #16161c; border: 1px solid rgba(255,255,255,0.18); border-radius: 14px;
     box-shadow: 0 12px 40px rgba(0,0,0,0.65);
@@ -2457,6 +2862,10 @@ const s = {
   },
   replyBarText: {
     fontSize: 13, color: 'rgba(255,255,255,0.7)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+  },
+  recBar: {
+    flex: 1, minWidth: 0, height: 44, display: 'flex', alignItems: 'center', gap: 10, padding: '0 14px',
+    background: '#16161c', border: '1.5px solid rgba(255,255,255,0.28)', borderRadius: 12, color: '#fff',
   },
   emojiPickerWrap: { position: 'relative', flexShrink: 0 },
   plusMenu: {
