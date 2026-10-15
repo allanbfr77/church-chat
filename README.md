@@ -1,4 +1,4 @@
-# NVB Chat
+# INVB Chat
 
 Chat em tempo real para a **Igreja Nova Vida Botafogo**. Aplicação web progressiva (PWA) com mensagens instantâneas, anexos, notificações e suporte mobile.
 
