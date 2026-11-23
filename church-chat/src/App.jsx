@@ -391,6 +391,7 @@ function getStoredSession() {
     const raw = localStorage.getItem('cruch_session')
     if (raw) {
       const session = JSON.parse(raw)
+      if (session?.userId && !localStorage.getItem(USER_ID_KEY)) localStorage.setItem(USER_ID_KEY, session.userId)
       if (!isSessionExpired(session?.name, session?.dayKey)) return session
       localStorage.removeItem('cruch_session')
     }
@@ -398,7 +399,44 @@ function getStoredSession() {
   return null
 }
 function saveSession(userId, name, isAdmin = false, avatar = null, dayKey = dailyResetDayKey()) {
-  try { localStorage.setItem('cruch_session', JSON.stringify({ userId, name, isAdmin, avatar, dayKey })) } catch {}
+  try {
+    localStorage.setItem(USER_ID_KEY, userId)
+    localStorage.setItem('cruch_session', JSON.stringify({ userId, name, isAdmin, avatar, dayKey }))
+  } catch {}
+}
+
+// O id do aparelho sobrevive ao logout: assim as reservas de nome/avatar que ele mesmo
+// deixou para trás não o bloqueiam ao entrar de novo.
+const USER_ID_KEY = 'cruch_user_id'
+function getDeviceUserId() {
+  try {
+    const saved = localStorage.getItem(USER_ID_KEY)
+    if (saved) return saved
+    const fresh = uid()
+    localStorage.setItem(USER_ID_KEY, fresh)
+    return fresh
+  } catch {}
+  return uid()
+}
+
+const LOCK_STALE_MS = 60 * 1000
+
+/** Idade de uma reserva, lida do sufixo de tempo do connId (ver uid()); null se ilegível. */
+function lockAgeMs(connId, now = Date.now()) {
+  const ts = parseInt(String(connId).slice(-8), 36)
+  return Number.isFinite(ts) && ts > 0 && ts <= now + LOCK_STALE_MS ? now - ts : null
+}
+
+/** Reservas de quem não está mais online (e não acabou de entrar) são lixo e podem ser ignoradas. */
+function dropStaleLocks(locks, onlineIds, myUserId) {
+  if (!onlineIds) return locks
+  const kept = {}
+  Object.entries(locks || {}).forEach(([connId, owner]) => {
+    const age = lockAgeMs(connId)
+    const stale = owner !== myUserId && !onlineIds.has(owner) && age !== null && age > LOCK_STALE_MS
+    if (!stale) kept[connId] = owner
+  })
+  return kept
 }
 function clearSession() {
   try { localStorage.removeItem('cruch_session') } catch {}
@@ -824,7 +862,7 @@ const sm = {
 export default function App() {
   const stored = getStoredSession()
   const sessionDayRef = useRef(stored?.dayKey || null)
-  const [userId]      = useState(() => stored?.userId || uid())
+  const [userId]      = useState(() => stored?.userId || getDeviceUserId())
   const [name, setName]               = useState(stored?.name || '')
   const [avatar, setAvatar]           = useState(() => (avatarUrl(stored?.avatar) || stored?.avatar === INITIAL_AVATAR ? stored.avatar : null))
   const avatarRef = useRef(avatar)
@@ -1094,12 +1132,19 @@ export default function App() {
 
   // Reserva o nome: dois usuários diferentes não podem estar logados com o mesmo nome.
   // Várias abas da mesma pessoa (mesmo userId) são permitidas.
+  /** Ids de quem está online agora; null se não deu para consultar (aí nenhuma reserva é descartada). */
+  const getOnlineUserIds = () =>
+    get(dbRef(db, 'presence'))
+      .then(snap => new Set(Object.keys(snap.val() || {})))
+      .catch(() => null)
+
   const claimName = async nm => {
     const key = nameKey(nm)
     const connId = connIdRef.current
     const lockRef = dbRef(db, `nameLocks/${key}`)
+    const onlineIds = await getOnlineUserIds()
     const res = await runTransaction(lockRef, cur => {
-      const o = cur || {}
+      const o = dropStaleLocks(cur, onlineIds, userId)
       if (Object.values(o).some(v => v !== userId)) return // nome em uso por outra pessoa: aborta
       return { ...o, [connId]: userId }
     })
@@ -1114,8 +1159,9 @@ export default function App() {
     if (!id || id === INITIAL_AVATAR) return true
     const connId = connIdRef.current
     const lockRef = dbRef(db, `avatarLocks/${avatarKey(id)}`)
+    const onlineIds = await getOnlineUserIds()
     const res = await runTransaction(lockRef, cur => {
-      const o = cur || {}
+      const o = dropStaleLocks(cur, onlineIds, userId)
       if (Object.values(o).some(v => v !== userId)) return
       return { ...o, [connId]: userId }
     })
