@@ -372,15 +372,33 @@ function nameInitial(name) {
 }
 
 // ── Persistent Session ────────────────────────────────────────
+// Logins que sobrevivem ao reset diário; todos os outros são deslogados na virada do dia.
+const FIXED_SESSION_NAMES = ['PC - LIVE', 'PC - SOM']
+const fixedNameKey = n => String(n || '').replace(/\s+/g, '').toUpperCase()
+const FIXED_SESSION_KEYS = new Set(FIXED_SESSION_NAMES.map(fixedNameKey))
+
+function isFixedSessionName(n) {
+  return FIXED_SESSION_KEYS.has(fixedNameKey(n))
+}
+
+/** Login de um dia anterior (ou sem data) expira, exceto os nomes fixos. */
+function isSessionExpired(sessionName, sessionDayKey, todayKey = dailyResetDayKey()) {
+  return !isFixedSessionName(sessionName) && sessionDayKey !== todayKey
+}
+
 function getStoredSession() {
   try {
     const raw = localStorage.getItem('cruch_session')
-    if (raw) return JSON.parse(raw)
+    if (raw) {
+      const session = JSON.parse(raw)
+      if (!isSessionExpired(session?.name, session?.dayKey)) return session
+      localStorage.removeItem('cruch_session')
+    }
   } catch {}
   return null
 }
-function saveSession(userId, name, isAdmin = false, avatar = null) {
-  try { localStorage.setItem('cruch_session', JSON.stringify({ userId, name, isAdmin, avatar })) } catch {}
+function saveSession(userId, name, isAdmin = false, avatar = null, dayKey = dailyResetDayKey()) {
+  try { localStorage.setItem('cruch_session', JSON.stringify({ userId, name, isAdmin, avatar, dayKey })) } catch {}
 }
 function clearSession() {
   try { localStorage.removeItem('cruch_session') } catch {}
@@ -805,6 +823,7 @@ const sm = {
 // ── Main App ──────────────────────────────────────────────────
 export default function App() {
   const stored = getStoredSession()
+  const sessionDayRef = useRef(stored?.dayKey || null)
   const [userId]      = useState(() => stored?.userId || uid())
   const [name, setName]               = useState(stored?.name || '')
   const [avatar, setAvatar]           = useState(() => (avatarUrl(stored?.avatar) || stored?.avatar === INITIAL_AVATAR ? stored.avatar : null))
@@ -1131,7 +1150,8 @@ export default function App() {
     }
     setClaiming(false)
     const admin = adminCode.trim() === ADMIN_CODE
-    saveSession(userId, name.trim(), admin, avatar)
+    sessionDayRef.current = dailyResetDayKey(getApproxServerNow())
+    saveSession(userId, name.trim(), admin, avatar, sessionDayRef.current)
     setIsAdmin(admin)
     joinTimeRef.current = Date.now()
     knownIdsRef.current = messages.length > 0
@@ -1184,6 +1204,12 @@ export default function App() {
   const ensureDailyChatReset = async () => {
     const now = getApproxServerNow()
     const dayKey = dailyResetDayKey(now)
+
+    // Virou o dia com o app aberto: desloga (exceto nomes fixos) e segue para zerar o chat
+    if (joinedRef.current && isSessionExpired(nameRef.current, sessionDayRef.current, dayKey)) {
+      handleExit()
+    }
+
     if (lastDailyResetSuccessRef.current === dayKey) return
     if (getCachedDailyResetDay() === dayKey) {
       lastDailyResetSuccessRef.current = dayKey

@@ -14,7 +14,7 @@ Chat em tempo real para a **Igreja Nova Vida Botafogo**. Aplicação web progres
 - **Indicador de digitação** e lista de usuários online
 - **Edição e exclusão** de mensagens (uma edição por mensagem)
 - **Notificações push** no navegador (melhor experiência com o app instalado)
-- **Reset diário automático** à meia-noite (fuso `America/Sao_Paulo`)
+- **Reset diário automático** à meia-noite (fuso `America/Sao_Paulo`): apaga as mensagens e desloga todos os usuários, exceto os logins fixos `PC - LIVE` e `PC - SOM`
 - **Modo admin** para limpar o histórico completo do chat
 - **PWA instalável** no Android e iOS (Tela de Início)
 - **Visualização ampliada** de imagens com zoom por pinça
